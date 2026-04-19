@@ -21,7 +21,8 @@ def _install_playwright_browser():
 _install_playwright_browser()
 
 pg = st.navigation([
-    st.Page("pages/search.py",  title="Find My Needs",      icon="🔍", default=True),
-    st.Page("pages/profile.py", title="Profile & Settings", icon="⚙️"),
+    st.Page("pages/search.py",   title="Find My Needs", icon="🔍", default=True),
+    st.Page("pages/profile.py",  title="Profile",       icon="👤"),
+    st.Page("pages/settings.py", title="Settings",      icon="⚙️"),
 ])
 pg.run()
