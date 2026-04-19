@@ -37,12 +37,7 @@ def _dec(s: str) -> str:
         return ""
 
 
-@st.cache_resource
-def _cookie_mgr():
-    return stx.CookieManager(key="bd")
-
-
-cookie_manager = _cookie_mgr()
+cookie_manager = stx.CookieManager(key="bd")
 
 
 def _get_cookie(name: str) -> str:
