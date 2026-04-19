@@ -7,9 +7,11 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
+import extra_streamlit_components as stx
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
 from src.ebird.client import EBirdClient
@@ -18,13 +20,39 @@ from src.tracker.needs_finder import Need, NeedsFinder
 
 load_dotenv()
 
+# ── Cookie-based encrypted credential storage ─────────────────────────────────
+# Fernet key for encrypting credentials stored in browser cookies.
+_FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+_f = Fernet(_FERNET_KEY)
 
-def _secret(key: str, default: str = "") -> str:
-    """Read from st.secrets (Streamlit Cloud) with fallback to env vars."""
+
+def _enc(s: str) -> str:
+    return _f.encrypt(s.encode()).decode()
+
+
+def _dec(s: str) -> str:
     try:
-        return st.secrets[key]
-    except (KeyError, FileNotFoundError):
-        return os.environ.get(key, default)
+        return _f.decrypt(s.encode()).decode()
+    except Exception:
+        return ""
+
+
+@st.cache_resource
+def _cookie_mgr():
+    return stx.CookieManager(key="bd")
+
+
+cookie_manager = _cookie_mgr()
+
+
+def _get_cookie(name: str) -> str:
+    """Read a cookie, decrypting its value. Returns '' if missing."""
+    raw = cookie_manager.get(name)
+    return _dec(raw) if raw else ""
+
+
+def _set_cookie(name: str, value: str) -> None:
+    cookie_manager.set(name, _enc(value), max_age=365 * 24 * 3600)
 
 
 @st.cache_resource(show_spinner="Installing browser for eBird login...")
@@ -45,21 +73,32 @@ st.caption("Birds reported on eBird that you haven't seen yet this year — sort
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("eBird Account")
-    _u = _secret("EBIRD_USERNAME")
-    _p = _secret("EBIRD_PASSWORD")
-    _k = _secret("EBIRD_API_KEY")
-    _has_secrets = bool(_u and _p and _k)
+    _cu = _get_cookie("bd_username")
+    _cp = _get_cookie("bd_password")
+    _ck = _get_cookie("bd_apikey")
 
-    if _has_secrets:
-        username = _u
-        password = _p
-        api_key  = _k
+    if _cu and _cp and _ck:
+        username = _cu
+        password = _cp
+        api_key  = _ck
         st.success(f"Connected as **{username}**")
+        if st.button("Change credentials", use_container_width=True):
+            for _name in ("bd_username", "bd_password", "bd_apikey"):
+                cookie_manager.delete(_name)
+            st.rerun()
     else:
-        username = st.text_input("Username", value=_u)
-        password = st.text_input("Password", value=_p, type="password")
-        api_key  = st.text_input("API Key",  value=_k, type="password",
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        api_key  = st.text_input("API Key",  type="password",
                                   help="Free key at ebird.org/api/keygen")
+        if st.button("Save & remember me", type="primary", use_container_width=True):
+            if username and password and api_key:
+                _set_cookie("bd_username", username)
+                _set_cookie("bd_password", password)
+                _set_cookie("bd_apikey",   api_key)
+                st.rerun()
+            else:
+                st.warning("Fill in all three fields.")
 
     st.divider()
     st.subheader("Your Location")
