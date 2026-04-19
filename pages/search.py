@@ -2,6 +2,7 @@
 Find My Needs — main search page.
 Credentials are read from cookies (set in Profile). Search settings pre-fill from cookies.
 """
+import json
 import os
 from datetime import datetime, timedelta
 
@@ -22,34 +23,43 @@ load_dotenv()
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
 
-
-def _dec(s: str) -> str:
-    try:
-        return _f.decrypt(s.encode()).decode()
-    except Exception:
-        return ""
-
-
-def _enc(s: str) -> str:
-    return _f.encrypt(s.encode()).decode()
-
-
 cm = stx.CookieManager(key="bd")
 
-
-def _get(name: str) -> str:
-    raw = cm.get(name)
-    return _dec(raw) if raw else ""
+_MAX_AGE = 365 * 24 * 3600
 
 
-def _set(name: str, value: str) -> None:
-    cm.set(name, _enc(value), max_age=365 * 24 * 3600)
+def _dec_json(raw: str) -> dict:
+    try:
+        return json.loads(_f.decrypt(raw.encode()).decode())
+    except Exception:
+        return {}
+
+
+def _enc_json(obj: dict) -> str:
+    return _f.encrypt(json.dumps(obj).encode()).decode()
+
+
+def _load_creds() -> tuple[str, str, str]:
+    raw = cm.get("bd_creds")
+    d = _dec_json(raw) if raw else {}
+    return d.get("u", ""), d.get("p", ""), d.get("k", "")
+
+
+def _load_prefs() -> dict:
+    raw = cm.get("bd_prefs")
+    defaults = {"lat": 26.4615, "lng": -80.0728, "state": "US-FL", "dist": 25, "days": 7}
+    if raw:
+        defaults.update(_dec_json(raw))
+    return defaults
+
+
+def _save_prefs(lat, lng, state, dist, days) -> None:
+    cm.set("bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
+                                   "dist": dist, "days": days}), max_age=_MAX_AGE)
 
 
 # ── Credentials from cookies ───────────────────────────────────────────────────
-username = _get("bd_username")
-password = _get("bd_password")
-api_key  = _get("bd_apikey")
+username, password, api_key = _load_creds()
 
 if not (username and password and api_key):
     st.title("🦅 Birding Needs Finder")
@@ -57,19 +67,21 @@ if not (username and password and api_key):
     st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+_prefs = _load_prefs()
+
 with st.sidebar:
     st.caption(f"Signed in as **{username}**")
     st.divider()
 
     st.subheader("Your Location")
     c1, c2 = st.columns(2)
-    lat = c1.number_input("Latitude",  value=float(_get("bd_lat")  or "26.4615"), format="%.4f")
-    lng = c2.number_input("Longitude", value=float(_get("bd_lng")  or "-80.0728"), format="%.4f")
-    state_code = st.text_input("State Code", value=_get("bd_state") or "US-FL",
+    lat = c1.number_input("Latitude",  value=float(_prefs["lat"]),  format="%.4f")
+    lng = c2.number_input("Longitude", value=float(_prefs["lng"]), format="%.4f")
+    state_code = st.text_input("State Code", value=_prefs["state"],
                                 help="e.g. US-FL, US-TX, US-WA").upper()
 
     st.subheader("Search Settings")
-    dist_km = st.slider("Local radius (km)", 5, 100, int(_get("bd_dist") or "25"), 5)
+    dist_km = st.slider("Local radius (km)", 5, 100, int(_prefs["dist"]), 5)
 
     st.markdown("**Seen within last:**")
     dc1, dc2, dc3, dc4 = st.columns(4)
@@ -79,15 +91,12 @@ with st.sidebar:
     if dc4.button("14d", use_container_width=True): st.session_state["days_back"] = 14
     days_back = st.number_input(
         "or custom days", min_value=1, max_value=30,
-        value=st.session_state.get("days_back", int(_get("bd_days") or "7")),
+        value=st.session_state.get("days_back", int(_prefs["days"])),
     )
     st.session_state["days_back"] = days_back
 
     if st.button("Remember these settings", use_container_width=True):
-        for name, val in [("bd_lat", str(lat)), ("bd_lng", str(lng)),
-                          ("bd_state", state_code), ("bd_dist", str(dist_km)),
-                          ("bd_days", str(days_back))]:
-            _set(name, val)
+        _save_prefs(lat, lng, state_code, dist_km, days_back)
         st.success("Saved as defaults!")
 
     st.divider()
