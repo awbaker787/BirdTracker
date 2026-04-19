@@ -11,20 +11,20 @@ import pandas as pd
 import streamlit as st
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from streamlit_cookies_controller import CookieController
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
 
 from src.ebird.client import EBirdClient
 from src.ebird.scraper import fetch_year_list_multi_region
 from src.tracker.needs_finder import Need, NeedsFinder
+from src.ui.cookies import cc_get, cc_set, get_cc
 from src.ui.map_builder import build_needs_map
 
 load_dotenv()
 
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
-cc = CookieController(key="bd_cc")
+cc = get_cc()
 _ONE_YEAR = 365 * 24 * 3600
 
 
@@ -57,7 +57,7 @@ def _enc_json(obj):
 
 def _load_creds():
     try:
-        raw = cc.get("bd_creds")
+        raw = cc_get(cc, "bd_creds")
         d = _dec_json(raw) if raw else {}
         return d.get("u", ""), d.get("p", ""), d.get("k", "")
     except Exception as e:
@@ -67,7 +67,7 @@ def _load_creds():
 def _load_prefs():
     defaults = {"lat": 26.4615, "lng": -80.0728, "state": "US-FL", "dist": 25, "days": 7}
     try:
-        raw = cc.get("bd_prefs")
+        raw = cc_get(cc, "bd_prefs")
         if raw:
             defaults.update(_dec_json(raw))
     except Exception as e:
@@ -76,8 +76,8 @@ def _load_prefs():
 
 def _save_prefs(lat, lng, state, dist, days):
     try:
-        cc.set("bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
-                                       "dist": dist, "days": days}), max_age=_ONE_YEAR)
+        cc_set(cc, "bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
+                                           "dist": dist, "days": days}), max_age=_ONE_YEAR)
     except Exception as e:
         _log_error("save_prefs", e)
 

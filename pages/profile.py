@@ -6,13 +6,13 @@ import traceback
 
 import streamlit as st
 from cryptography.fernet import Fernet
-from streamlit_cookies_controller import CookieController
 
 from src.ebird.scraper import _login
+from src.ui.cookies import cc_get, cc_remove, cc_set, get_cc
 
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
-cc = CookieController(key="bd_cc")
+cc = get_cc()
 
 
 def _log_error(ctx, exc):
@@ -35,20 +35,25 @@ def _dec(raw):
         return {}
 
 
+_ONE_YEAR = 365 * 24 * 3600
+
+
 def _load_creds():
     try:
-        raw = cc.get("bd_creds")
+        raw = cc_get(cc, "bd_creds")
         d = _dec(raw) if raw else {}
         return d.get("u", ""), d.get("p", ""), d.get("k", "")
     except Exception as e:
-        _log_error("load_creds", e); return "", "", ""
+        _log_error("load_creds", e)
+        return "", "", ""
 
-
-_ONE_YEAR = 365 * 24 * 3600
 
 def _save_creds(u, p, k):
     try:
-        cc.set("bd_creds", _enc({"u": u, "p": p, "k": k}), max_age=_ONE_YEAR); return True
+        ok = cc_set(cc, "bd_creds", _enc({"u": u, "p": p, "k": k}), max_age=_ONE_YEAR)
+        if not ok:
+            _log_error("save_creds", RuntimeError("Cookie controller not ready — please try again."))
+        return ok
     except Exception as e:
         _log_error("save_creds", e); return False
 
@@ -98,10 +103,7 @@ if cu and cp and ck:
             else:
                 st.error(f"Login failed: {err}")
         if col3.button("Clear & log out", use_container_width=True):
-            try:
-                cc.remove("bd_creds")
-            except Exception as e:
-                _log_error("clear_creds", e)
+            cc_remove(cc, "bd_creds")
             st.rerun()
 else:
     st.info("Enter your eBird credentials. Saved encrypted in your browser — never re-enter them.")

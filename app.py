@@ -6,13 +6,13 @@ from streamlit_cookies_controller import CookieController
 
 st.set_page_config(page_title="Birding Needs Finder", page_icon="🦅", layout="wide")
 
-# Render the cookie controller once here so it initialises (sends browser cookies
-# back to Python) before any page script runs its auth check.
-# On the very first render the component hasn't sent its data yet, so we do one
-# controlled rerun — after that cookies are available for the rest of the session.
+# Render the cookie controller here so the browser-side component mounts before
+# any page script runs.  __cookies is None on the very first render; probe it
+# and rerun until the component has sent its data back (typically 1 extra cycle).
 _cc = CookieController(key="bd_cc")
-if "cc_ready" not in st.session_state:
-    st.session_state["cc_ready"] = True
+try:
+    _cc.get("__probe__")
+except TypeError:
     st.rerun()
 
 pg = st.navigation([
