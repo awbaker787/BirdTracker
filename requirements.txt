@@ -1,8 +1,9 @@
 requests>=2.31.0
 python-dotenv>=1.0.0
-streamlit>=1.35.0
+streamlit>=1.36.0
 pandas>=2.0.0
-pydeck>=0.9.0
+folium>=0.17.0
+streamlit-folium>=0.22.0
 playwright>=1.40.0
 extra-streamlit-components>=0.1.60
 cryptography>=42.0.0
