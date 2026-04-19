@@ -4,6 +4,5 @@ streamlit>=1.36.0
 pandas>=2.0.0
 folium>=0.17.0
 streamlit-folium>=0.22.0
-playwright>=1.40.0
 streamlit-cookies-controller>=0.0.4
 cryptography>=42.0.0
