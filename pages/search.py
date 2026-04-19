@@ -3,11 +3,14 @@ Find My Needs — main search page.
 All key controls (location, days filter, search) are on the main page for fast access.
 Sidebar holds less-frequently-changed settings.
 """
+import io
 import json
 import traceback
+import zipfile
 from datetime import datetime, timedelta
 
 import pandas as pd
+import requests
 import streamlit as st
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
@@ -26,6 +29,7 @@ _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
 cc = get_cc()
 _ONE_YEAR = 365 * 24 * 3600
+_META_COOKIE = "bd_yl_meta"   # stores {url, loaded_at, source}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -81,6 +85,21 @@ def _save_prefs(lat, lng, state, dist, days):
     except Exception as e:
         _log_error("save_prefs", e)
 
+def _load_yl_meta() -> dict:
+    try:
+        raw = cc_get(cc, _META_COOKIE)
+        return _dec_json(raw) if raw else {}
+    except Exception:
+        return {}
+
+def _save_yl_meta(source: str, loaded_at: str, url: str = ""):
+    try:
+        cc_set(cc, _META_COOKIE, _enc_json(
+            {"source": source, "loaded_at": loaded_at, "url": url}
+        ), max_age=_ONE_YEAR)
+    except Exception as e:
+        _log_error("save_yl_meta", e)
+
 def needs_to_df(needs: list[Need], days_back: int) -> pd.DataFrame:
     cutoff = datetime.now() - timedelta(days=days_back)
     rows = []
@@ -117,13 +136,50 @@ def render_list(df, label):
         use_container_width=True)
 
 
-# ── Cached year list fetch (persists across page reloads) ─────────────────────
+# ── Year-list helpers ──────────────────────────────────────────────────────────
+def _parse_ebird_csv(data: bytes, sc: str, yr: int) -> dict:
+    df = pd.read_csv(io.BytesIO(data))
+    code_col  = next((c for c in df.columns if "species" in c.lower() and "code" in c.lower()), None)
+    date_col  = next((c for c in df.columns if c.strip().lower() == "date"), None)
+    state_col = next((c for c in df.columns if "state" in c.lower() or "province" in c.lower()), None)
+    if not code_col or not date_col:
+        raise ValueError(
+            f"Could not find Species Code / Date columns. "
+            f"Found columns: {list(df.columns)[:10]}"
+        )
+    df["_yr"] = pd.to_datetime(df[date_col], errors="coerce").dt.year
+    ydf = df[df["_yr"] == yr]
+    codes = set(ydf[code_col].dropna().str.strip())
+    if state_col:
+        us_codes    = set(ydf[ydf[state_col].str.startswith("US-", na=False)][code_col].dropna().str.strip())
+        state_codes = set(ydf[ydf[state_col] == sc][code_col].dropna().str.strip())
+    else:
+        us_codes = state_codes = codes
+    return {"world": list(codes), "US": list(us_codes), sc: list(state_codes)}
+
+def _bytes_from_url(url: str) -> bytes:
+    """Download URL; if ZIP, extract the first CSV inside it."""
+    resp = requests.get(url, timeout=60)
+    resp.raise_for_status()
+    content = resp.content
+    ct = resp.headers.get("Content-Type", "")
+    if url.lower().endswith(".zip") or "zip" in ct:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not csv_names:
+                raise ValueError("No CSV found inside the ZIP file.")
+            content = zf.read(csv_names[0])
+    return content
+
 @st.cache_data(ttl=23 * 3600, show_spinner=False)
 def _cached_year_list(username: str, password: str, state_code: str, year: int) -> dict:
-    """Fetch year lists once; cached 23 h so the scrape runs at most once per day."""
     result = fetch_year_list_multi_region(username, password, state_code, year)
-    # cache_data needs JSON-serialisable data — convert sets to lists
     return {k: list(v) for k, v in result.items()}
+
+@st.cache_data(ttl=23 * 3600, show_spinner=False)
+def _cached_year_list_from_url(url: str, state_code: str, year: int) -> dict:
+    data = _bytes_from_url(url)
+    return _parse_ebird_csv(data, state_code, year)
 
 
 # ── Auth check ────────────────────────────────────────────────────────────────
@@ -135,6 +191,7 @@ if not (username and password and api_key):
     st.stop()
 
 _prefs = _load_prefs()
+_yl_meta = _load_yl_meta()
 
 # ── Sidebar: less-frequent settings ───────────────────────────────────────────
 with st.sidebar:
@@ -180,7 +237,7 @@ with day_col:
     st.session_state["days_back"] = days_back
 
 with run_col:
-    st.caption(" ")   # align vertically with other columns
+    st.caption(" ")
     run_btn = st.button("Find My Needs", type="primary", use_container_width=True)
 
 st.divider()
@@ -190,71 +247,95 @@ if not run_btn:
     _show_error_log()
     st.stop()
 
-# ── Fetch year list (cached 23 h, with manual fallback) ───────────────────────
+# ── Fetch year list ────────────────────────────────────────────────────────────
 year = datetime.now().year
-
-def _parse_ebird_csv(data: bytes, sc: str, yr: int) -> dict:
-    import io
-    df = pd.read_csv(io.BytesIO(data))
-    code_col = next((c for c in df.columns if "species" in c.lower() and "code" in c.lower()), None)
-    date_col = next((c for c in df.columns if "date" in c.lower()), None)
-    if not code_col or not date_col:
-        raise ValueError("Cannot find Species Code / Date columns — is this an eBird My Data CSV?")
-    df["_yr"] = pd.to_datetime(df[date_col], errors="coerce").dt.year
-    ydf = df[df["_yr"] == yr]
-    state_col = next((c for c in df.columns if "state" in c.lower() or "province" in c.lower()), None)
-    codes = set(ydf[code_col].dropna().str.strip())
-    if state_col:
-        us_codes    = set(ydf[ydf[state_col].str.startswith("US-", na=False)][code_col].dropna().str.strip())
-        state_codes = set(ydf[ydf[state_col] == sc][code_col].dropna().str.strip())
-    else:
-        us_codes = state_codes = codes
-    return {"world": list(codes), "US": list(us_codes), sc: list(state_codes)}
-
 raw_lists = None
+_yl_source = ""
 
-# Try automated scrape first
-with st.spinner("Fetching your eBird year list..."):
-    try:
-        raw_lists = _cached_year_list(username, password, state_code, year)
-    except LoginError as e:
-        _log_error("fetch_year_list", e)
-    except Exception as e:
-        _log_error("fetch_year_list", e)
-        st.error(f"eBird error: {e}")
-        _show_error_log()
-        st.stop()
+# 1. Session cache (upload/URL already done this session)
+if "_manual_year_lists" in st.session_state:
+    raw_lists = st.session_state["_manual_year_lists"]
+    _yl_source = st.session_state.get("_yl_source", "manual")
 
-# If automated login failed, offer manual entry
+# 2. Automated scrape
 if raw_lists is None:
-    # Check if the user already provided manual data this session
-    raw_lists = st.session_state.get("_manual_year_lists")
+    with st.spinner("Fetching your eBird year list..."):
+        try:
+            raw_lists = _cached_year_list(username, password, state_code, year)
+            _yl_source = "auto"
+        except LoginError as e:
+            _log_error("fetch_year_list", e)
+        except Exception as e:
+            _log_error("fetch_year_list", e)
+            st.error(f"eBird error: {e}")
+            _show_error_log()
+            st.stop()
 
+# 3. Re-fetch from saved URL (if automated scrape failed)
+if raw_lists is None and _yl_meta.get("url"):
+    saved_url = _yl_meta["url"]
+    with st.spinner(f"Re-loading year list from saved URL..."):
+        try:
+            raw_lists = _cached_year_list_from_url(saved_url, state_code, year)
+            st.session_state["_manual_year_lists"] = raw_lists
+            st.session_state["_yl_source"] = "url"
+            _yl_source = "url"
+        except Exception as e:
+            _log_error("reload_from_url", e)
+            # Saved URL failed — clear it so we don't loop forever
+            _save_yl_meta("", "", "")
+
+# 4. Manual upload / URL entry
 if raw_lists is None:
     st.warning(
-        "Automated eBird login is being blocked by the server from this host. "
-        "Upload your eBird data CSV as a one-time workaround:"
+        "Automated eBird login is being blocked by the server. "
+        "Provide your eBird data to continue:"
     )
-    with st.expander("How to download your eBird data", expanded=True):
+    with st.expander("How to get your eBird data", expanded=True):
         st.markdown(
             "1. Log into **[ebird.org](https://ebird.org)** in your browser\n"
             "2. Go to **My eBird → Download My Data** "
             "([direct link](https://ebird.org/downloadMyData))\n"
-            "3. Click **Request Data Export** and wait for the email\n"
-            "4. Download `MyEBirdData.csv` and upload it below"
+            "3. Click **Request Data Export** and wait for the email with a download link\n"
+            "4. Paste that download link below **or** download and upload the ZIP/CSV"
         )
-    uploaded = st.file_uploader("Upload MyEBirdData.csv", type="csv")
-    if uploaded:
+
+    url_input = st.text_input(
+        "Paste eBird download URL (ZIP or CSV)",
+        placeholder="https://is-ebird-datadownload-projects-prod.s3.amazonaws.com/..."
+    )
+    uploaded  = st.file_uploader("— or upload the file directly —", type=["csv", "zip"])
+
+    if url_input:
+        with st.spinner("Downloading and parsing..."):
+            try:
+                raw_lists = _cached_year_list_from_url(url_input.strip(), state_code, year)
+                loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+                st.session_state["_manual_year_lists"] = raw_lists
+                st.session_state["_yl_source"] = "url"
+                _save_yl_meta("url", loaded_at, url_input.strip())
+                st.success(f"Loaded {len(raw_lists.get('world',[]))} world species from URL.")
+            except Exception as e:
+                st.error(f"Could not load from URL: {e}")
+                _show_error_log()
+                st.stop()
+    elif uploaded:
         try:
-            raw_lists = _parse_ebird_csv(uploaded.read(), state_code, year)
+            content = uploaded.read()
+            if uploaded.name.lower().endswith(".zip"):
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    csv_names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+                    if not csv_names:
+                        raise ValueError("No CSV found in ZIP.")
+                    content = zf.read(csv_names[0])
+            raw_lists = _parse_ebird_csv(content, state_code, year)
+            loaded_at = datetime.now().strftime("%Y-%m-%d %H:%M")
             st.session_state["_manual_year_lists"] = raw_lists
-            st.success(
-                f"Loaded: {len(raw_lists.get('world',[]))} world / "
-                f"{len(raw_lists.get('US',[]))} US / "
-                f"{len(raw_lists.get(state_code,[]))} {state_code} species this year."
-            )
+            st.session_state["_yl_source"] = "upload"
+            _save_yl_meta("upload", loaded_at)
+            st.success(f"Loaded {len(raw_lists.get('world',[]))} world species from file.")
         except Exception as e:
-            st.error(f"Could not parse CSV: {e}")
+            st.error(f"Could not parse file: {e}")
             _show_error_log()
             st.stop()
     else:
@@ -265,10 +346,19 @@ seen_world = set(raw_lists.get("world", []))
 seen_us    = set(raw_lists.get("US", []))
 seen_state = set(raw_lists.get(state_code, []))
 
+# ── Year list metrics + data version ──────────────────────────────────────────
 m1, m2, m3 = st.columns(3)
 m1.metric("World this year",         len(seen_world))
 m2.metric("US this year",            len(seen_us))
 m3.metric(f"{state_code} this year", len(seen_state))
+
+# Show data version / last loaded info
+_meta = _load_yl_meta()
+if _yl_source == "auto":
+    st.caption("Year list: live from eBird · refreshes every 23 h")
+elif _meta.get("loaded_at"):
+    _src_label = {"url": "from URL", "upload": "uploaded file"}.get(_meta.get("source",""), "manual")
+    st.caption(f"Year list: {_src_label} · loaded {_meta['loaded_at']}")
 st.divider()
 
 # ── Fetch observations ─────────────────────────────────────────────────────────
@@ -328,9 +418,11 @@ with usa_tab:
     render_list(usa_df, "USA")
 
 st.divider()
-if st.button("Refresh Year List from eBird"):
+if st.button("Refresh / Update Year List"):
     _cached_year_list.clear()
+    _cached_year_list_from_url.clear()
     st.session_state.pop("_manual_year_lists", None)
+    st.session_state.pop("_yl_source", None)
     st.rerun()
 
 _show_error_log()
