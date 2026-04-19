@@ -45,10 +45,12 @@ def _load_prefs():
     return defaults
 
 
+_ONE_YEAR = 365 * 24 * 3600
+
 def _save_prefs(lat, lng, state, dist, days):
     try:
         cc.set("bd_prefs", _enc({"lat": lat, "lng": lng, "state": state,
-                                  "dist": dist, "days": days}))
+                                  "dist": dist, "days": days}), max_age=_ONE_YEAR)
         return True
     except Exception as e:
         _log_error("save_prefs", e); return False

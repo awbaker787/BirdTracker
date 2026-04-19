@@ -85,10 +85,12 @@ def _load_prefs() -> dict:
     return defaults
 
 
+_ONE_YEAR = 365 * 24 * 3600
+
 def _save_prefs(lat, lng, state, dist, days) -> None:
     try:
         cc.set("bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
-                                       "dist": dist, "days": days}))
+                                       "dist": dist, "days": days}), max_age=_ONE_YEAR)
     except Exception as e:
         _log_error("save_prefs", e)
 

@@ -42,9 +42,11 @@ def _load_creds():
         _log_error("load_creds", e); return "", "", ""
 
 
+_ONE_YEAR = 365 * 24 * 3600
+
 def _save_creds(u, p, k):
     try:
-        cc.set("bd_creds", _enc({"u": u, "p": p, "k": k})); return True
+        cc.set("bd_creds", _enc({"u": u, "p": p, "k": k}), max_age=_ONE_YEAR); return True
     except Exception as e:
         _log_error("save_creds", e); return False
 
