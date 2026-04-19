@@ -7,6 +7,7 @@ import traceback
 import streamlit as st
 from cryptography.fernet import Fernet
 from streamlit_cookies_controller import CookieController
+from streamlit_js_eval import get_geolocation
 
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
@@ -60,9 +61,19 @@ st.caption("These values pre-fill the search sidebar. Override them any time per
 prefs = _load_prefs()
 
 st.subheader("Location")
+
+if st.button("📍 Use My Current Location", use_container_width=True):
+    loc = get_geolocation()
+    if loc and "coords" in loc:
+        st.session_state["_geo_lat"] = loc["coords"]["latitude"]
+        st.session_state["_geo_lng"] = loc["coords"]["longitude"]
+        st.success(f"Location detected: {st.session_state['_geo_lat']:.4f}, {st.session_state['_geo_lng']:.4f}")
+    else:
+        st.warning("Could not detect location — browser may have blocked access.")
+
 c1, c2 = st.columns(2)
-lat   = c1.number_input("Latitude",  value=float(prefs["lat"]),  format="%.4f")
-lng   = c2.number_input("Longitude", value=float(prefs["lng"]), format="%.4f")
+lat   = c1.number_input("Latitude",  value=float(st.session_state.get("_geo_lat", prefs["lat"])),  format="%.4f")
+lng   = c2.number_input("Longitude", value=float(st.session_state.get("_geo_lng", prefs["lng"])), format="%.4f")
 state = st.text_input("State Code", value=prefs["state"],
                        help="e.g. US-FL, US-TX, US-WA").upper()
 

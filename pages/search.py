@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from streamlit_cookies_controller import CookieController
 from streamlit_folium import st_folium
+from streamlit_js_eval import get_geolocation
 
 from src.ebird.client import EBirdClient
 from src.ebird.scraper import fetch_year_list_multi_region
@@ -110,9 +111,14 @@ with st.sidebar:
 
     # ── SETTINGS: Location & Scope ────────────────────────────────────────────
     with st.expander("Settings — Location & Scope", expanded=False):
+        if st.button("📍 Use My Current Location", use_container_width=True):
+            loc = get_geolocation()
+            if loc and "coords" in loc:
+                st.session_state["_geo_lat"] = loc["coords"]["latitude"]
+                st.session_state["_geo_lng"] = loc["coords"]["longitude"]
         c1, c2 = st.columns(2)
-        lat = c1.number_input("Latitude",  value=float(_prefs["lat"]),  format="%.4f")
-        lng = c2.number_input("Longitude", value=float(_prefs["lng"]), format="%.4f")
+        lat = c1.number_input("Latitude",  value=float(st.session_state.get("_geo_lat", _prefs["lat"])),  format="%.4f")
+        lng = c2.number_input("Longitude", value=float(st.session_state.get("_geo_lng", _prefs["lng"])), format="%.4f")
         state_code = st.text_input("State Code", value=_prefs["state"],
                                     help="e.g. US-FL, US-TX, US-WA").upper()
         dist_km = st.slider("Local radius (km)", 5, 100, int(_prefs["dist"]), 5)
