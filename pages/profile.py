@@ -12,7 +12,7 @@ from src.ebird.scraper import _login
 
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
-cc = CookieController()
+cc = CookieController(key="bd_cc")
 
 
 def _log_error(ctx, exc):
