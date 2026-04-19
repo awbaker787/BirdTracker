@@ -1,16 +1,16 @@
 """
 Find My Needs — main search page.
-Credentials are read from cookies (set in Profile). Search settings pre-fill from cookies.
+Credentials from cookies (set in Profile). Settings and Filters are separate sidebar sections.
 """
 import json
-import os
+import traceback
 from datetime import datetime, timedelta
 
-import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
+from streamlit_cookies_controller import CookieController
 from streamlit_folium import st_folium
 
 from src.ebird.client import EBirdClient
@@ -23,11 +23,35 @@ load_dotenv()
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
 
-cm = stx.CookieManager(key="bd")
-
-_MAX_AGE = 365 * 24 * 3600
+cc = CookieController()
 
 
+# ── Error log ─────────────────────────────────────────────────────────────────
+def _log_error(context: str, exc: Exception) -> None:
+    if "_err_log" not in st.session_state:
+        st.session_state["_err_log"] = []
+    st.session_state["_err_log"].append({
+        "ctx": context,
+        "msg": str(exc),
+        "tb":  traceback.format_exc(),
+    })
+
+
+def _show_error_log():
+    errors = st.session_state.get("_err_log", [])
+    if not errors:
+        return
+    st.divider()
+    with st.expander(f"Error Log ({len(errors)} entries)", expanded=True):
+        for e in reversed(errors):
+            st.markdown(f"**{e['ctx']}**: `{e['msg']}`")
+            st.code(e["tb"], language="python")
+        if st.button("Clear error log"):
+            st.session_state["_err_log"] = []
+            st.rerun()
+
+
+# ── Cookie helpers ─────────────────────────────────────────────────────────────
 def _dec_json(raw: str) -> dict:
     try:
         return json.loads(_f.decrypt(raw.encode()).decode())
@@ -40,22 +64,32 @@ def _enc_json(obj: dict) -> str:
 
 
 def _load_creds() -> tuple[str, str, str]:
-    raw = cm.get("bd_creds")
-    d = _dec_json(raw) if raw else {}
-    return d.get("u", ""), d.get("p", ""), d.get("k", "")
+    try:
+        raw = cc.get("bd_creds")
+        d = _dec_json(raw) if raw else {}
+        return d.get("u", ""), d.get("p", ""), d.get("k", "")
+    except Exception as e:
+        _log_error("load_creds", e)
+        return "", "", ""
 
 
 def _load_prefs() -> dict:
-    raw = cm.get("bd_prefs")
     defaults = {"lat": 26.4615, "lng": -80.0728, "state": "US-FL", "dist": 25, "days": 7}
-    if raw:
-        defaults.update(_dec_json(raw))
+    try:
+        raw = cc.get("bd_prefs")
+        if raw:
+            defaults.update(_dec_json(raw))
+    except Exception as e:
+        _log_error("load_prefs", e)
     return defaults
 
 
 def _save_prefs(lat, lng, state, dist, days) -> None:
-    cm.set("bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
-                                   "dist": dist, "days": days}), max_age=_MAX_AGE)
+    try:
+        cc.set("bd_prefs", _enc_json({"lat": lat, "lng": lng, "state": state,
+                                       "dist": dist, "days": days}))
+    except Exception as e:
+        _log_error("save_prefs", e)
 
 
 # ── Credentials from cookies ───────────────────────────────────────────────────
@@ -64,6 +98,7 @@ username, password, api_key = _load_creds()
 if not (username and password and api_key):
     st.title("🦅 Birding Needs Finder")
     st.warning("Go to **Profile & Settings** to enter your eBird credentials first.")
+    _show_error_log()
     st.stop()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -73,34 +108,39 @@ with st.sidebar:
     st.caption(f"Signed in as **{username}**")
     st.divider()
 
-    st.subheader("Your Location")
-    c1, c2 = st.columns(2)
-    lat = c1.number_input("Latitude",  value=float(_prefs["lat"]),  format="%.4f")
-    lng = c2.number_input("Longitude", value=float(_prefs["lng"]), format="%.4f")
-    state_code = st.text_input("State Code", value=_prefs["state"],
-                                help="e.g. US-FL, US-TX, US-WA").upper()
+    # ── SETTINGS: Location & Scope ────────────────────────────────────────────
+    with st.expander("Settings — Location & Scope", expanded=False):
+        c1, c2 = st.columns(2)
+        lat = c1.number_input("Latitude",  value=float(_prefs["lat"]),  format="%.4f")
+        lng = c2.number_input("Longitude", value=float(_prefs["lng"]), format="%.4f")
+        state_code = st.text_input("State Code", value=_prefs["state"],
+                                    help="e.g. US-FL, US-TX, US-WA").upper()
+        dist_km = st.slider("Local radius (km)", 5, 100, int(_prefs["dist"]), 5)
+        if st.button("Save as defaults", use_container_width=True):
+            _save_prefs(lat, lng, state_code, dist_km,
+                        st.session_state.get("days_back", int(_prefs["days"])))
+            st.success("Saved!")
 
-    st.subheader("Search Settings")
-    dist_km = st.slider("Local radius (km)", 5, 100, int(_prefs["dist"]), 5)
+    st.divider()
 
-    st.markdown("**Seen within last:**")
+    # ── FILTERS: Time window ──────────────────────────────────────────────────
+    st.subheader("Filter")
+    st.caption("Birds seen within last:")
     dc1, dc2, dc3, dc4 = st.columns(4)
     if dc1.button("1d",  use_container_width=True): st.session_state["days_back"] = 1
     if dc2.button("3d",  use_container_width=True): st.session_state["days_back"] = 3
     if dc3.button("7d",  use_container_width=True): st.session_state["days_back"] = 7
     if dc4.button("14d", use_container_width=True): st.session_state["days_back"] = 14
     days_back = st.number_input(
-        "or custom days", min_value=1, max_value=30,
+        "Custom days", min_value=1, max_value=30,
         value=st.session_state.get("days_back", int(_prefs["days"])),
+        label_visibility="collapsed",
     )
     st.session_state["days_back"] = days_back
 
-    if st.button("Remember these settings", use_container_width=True):
-        _save_prefs(lat, lng, state_code, dist_km, days_back)
-        st.success("Saved as defaults!")
-
     st.divider()
-    run_btn = st.button("🔍 Find My Needs", type="primary", use_container_width=True)
+    run_btn = st.button("Find My Needs", type="primary", use_container_width=True)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -150,14 +190,15 @@ def render_list(df: pd.DataFrame, label: str):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-st.title("🦅 Birding Needs Finder")
-st.caption("Birds reported on eBird that you haven't seen yet this year — sorted nearest first.")
+st.title("Birding Needs Finder")
+st.caption("Birds reported on eBird that you haven't seen yet this year — nearest first.")
 
 if not run_btn:
-    st.info("Configure your settings in the sidebar, then click **Find My Needs**.")
+    st.info("Adjust filters in the sidebar, then click **Find My Needs**.")
+    _show_error_log()
     st.stop()
 
-# Fetch year lists (cached per session)
+# Fetch year lists — cached for the session, re-scrapes only on refresh
 cache_key = f"year_lists_{username}_{state_code}_{datetime.now().year}"
 if cache_key not in st.session_state:
     with st.spinner("Logging into eBird and fetching your year lists... (~15 sec)"):
@@ -165,7 +206,9 @@ if cache_key not in st.session_state:
             year_lists = fetch_year_list_multi_region(username, password, state_code)
             st.session_state[cache_key] = year_lists
         except Exception as e:
+            _log_error("fetch_year_list", e)
             st.error(f"eBird login failed: {e}")
+            _show_error_log()
             st.stop()
 
 year_lists = st.session_state[cache_key]
@@ -174,9 +217,9 @@ seen_us    = year_lists.get("US", set())
 seen_state = year_lists.get(state_code, set())
 
 m1, m2, m3 = st.columns(3)
-m1.metric("World this year",           len(seen_world))
-m2.metric("US this year",              len(seen_us))
-m3.metric(f"{state_code} this year",   len(seen_state))
+m1.metric("World this year",          len(seen_world))
+m2.metric("US this year",             len(seen_us))
+m3.metric(f"{state_code} this year",  len(seen_state))
 st.divider()
 
 
@@ -203,7 +246,9 @@ with st.spinner("Fetching eBird observations..."):
         state_needs = state_finder.state_needs(state_code, days_back)
         usa_needs   = usa_finder.usa_needs(days_back)
     except Exception as e:
+        _log_error("fetch_observations", e)
         st.error(f"eBird API error: {e}")
+        _show_error_log()
         st.stop()
 
 local_df = needs_to_df(local_needs, days_back)
@@ -216,16 +261,20 @@ st.caption(
     "Click any marker for details. Toggle **Local / State / US** layers top-right. "
     "Switch between Street and Satellite tiles."
 )
-bird_map = build_needs_map(lat, lng, local_df, state_df, usa_df)
-st_folium(bird_map, use_container_width=True, height=520, returned_objects=[])
+try:
+    bird_map = build_needs_map(lat, lng, local_df, state_df, usa_df)
+    st_folium(bird_map, use_container_width=True, height=520, returned_objects=[])
+except Exception as e:
+    _log_error("build_map", e)
+    st.warning("Map failed to render — see Error Log below.")
 
 st.divider()
 
 # ── List tabs ─────────────────────────────────────────────────────────────────
 local_tab, state_tab, usa_tab = st.tabs([
-    f"🏠 Local ({len(local_df)})",
-    f"🗺️ {state_code} ({len(state_df)})",
-    f"🇺🇸 USA ({len(usa_df)})",
+    f"Local ({len(local_df)})",
+    f"{state_code} ({len(state_df)})",
+    f"USA ({len(usa_df)})",
 ])
 with local_tab:
     st.caption(f"Within {dist_km} km — last {days_back} day(s)")
@@ -238,6 +287,8 @@ with usa_tab:
     render_list(usa_df, "USA")
 
 st.divider()
-if st.button("🔄 Refresh Year List from eBird"):
+if st.button("Refresh Year List from eBird"):
     del st.session_state[cache_key]
     st.rerun()
+
+_show_error_log()
