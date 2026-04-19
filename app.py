@@ -45,10 +45,21 @@ st.caption("Birds reported on eBird that you haven't seen yet this year — sort
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("eBird Account")
-    username = st.text_input("Username", value=_secret("EBIRD_USERNAME"))
-    password = st.text_input("Password", value=_secret("EBIRD_PASSWORD"), type="password")
-    api_key  = st.text_input("API Key",  value=_secret("EBIRD_API_KEY"), type="password",
-                              help="Free key at ebird.org/api/keygen")
+    _u = _secret("EBIRD_USERNAME")
+    _p = _secret("EBIRD_PASSWORD")
+    _k = _secret("EBIRD_API_KEY")
+    _has_secrets = bool(_u and _p and _k)
+
+    if _has_secrets:
+        username = _u
+        password = _p
+        api_key  = _k
+        st.success(f"Connected as **{username}**")
+    else:
+        username = st.text_input("Username", value=_u)
+        password = st.text_input("Password", value=_p, type="password")
+        api_key  = st.text_input("API Key",  value=_k, type="password",
+                                  help="Free key at ebird.org/api/keygen")
 
     st.divider()
     st.subheader("Your Location")

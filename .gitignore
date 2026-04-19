@@ -1,5 +1,6 @@
 .env
 .streamlit/secrets.toml
+push_to_github.sh
 data/lists/
 data/cache/
 __pycache__/

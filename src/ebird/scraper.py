@@ -33,7 +33,16 @@ async def _scrape_year_list_async(
     year = year or datetime.datetime.now().year
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process",
+            ],
+        )
         ctx = await browser.new_context()
         page = await ctx.new_page()
 
