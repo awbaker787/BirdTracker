@@ -1,11 +1,15 @@
 """
-eBird authenticated scraper — requests-based (no browser needed).
+eBird authenticated scraper.
+
+Uses curl_cffi to impersonate Chrome's TLS fingerprint so Cornell's CAS
+server doesn't reject the request.  Falls back to plain requests if
+curl_cffi is unavailable (e.g. local dev without the wheel).
 
 Login flow:
-  1. GET ebird.org (homepage) — establishes session cookies
-  2. GET ebird.org/login        — server redirects us to Cornell CAS
-  3. Parse the CAS form         — extracts lt/execution/eventId tokens
-  4. POST credentials to CAS   — follows redirect back to ebird.org
+  1. GET ebird.org            — warms up the session / gets cookies
+  2. GET ebird.org/login      — server 302s us to Cornell CAS
+  3. Parse CAS form           — extracts lt / execution / _eventId tokens
+  4. POST credentials to CAS  — redirects back to ebird.org on success
 """
 import datetime
 import os
@@ -13,15 +17,21 @@ import re
 import time
 from urllib.parse import urljoin
 
-import requests
+try:
+    from curl_cffi.requests import Session as _CurlSession
+    _HAVE_CURL_CFFI = True
+except ImportError:
+    _HAVE_CURL_CFFI = False
+    import requests as _requests
 
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent":      _CHROME_UA,
     "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
@@ -35,8 +45,25 @@ _SPECIES_NAME_RE = re.compile(
 )
 
 
+class LoginError(RuntimeError):
+    """Raised when eBird authentication fails (wrong password, IP block, etc.)."""
+
+
+def _make_session():
+    """Return a session that impersonates Chrome at the TLS level if possible."""
+    if _HAVE_CURL_CFFI:
+        # impersonate="chrome124" sets the exact TLS cipher / extension order
+        # that Chrome 124 uses — defeats TLS-fingerprint-based bot detection.
+        s = _CurlSession(impersonate="chrome124")
+        s.headers.update(_HEADERS)
+    else:
+        s = _requests.Session()
+        s.headers.update(_HEADERS)
+    return s
+
+
 def _parse_form(html: str, page_url: str) -> tuple[str, dict]:
-    """Extract form action URL and all input field values."""
+    """Extract the form action URL and all <input> values."""
     action_m = re.search(r'<form[^>]+action="([^"]+)"', html)
     if action_m:
         action = action_m.group(1).replace("&amp;", "&")
@@ -50,51 +77,48 @@ def _parse_form(html: str, page_url: str) -> tuple[str, dict]:
         value_m = re.search(r'\bvalue="([^"]*)"', tag)
         if name_m:
             fields[name_m.group(1)] = value_m.group(1) if value_m else ""
-
     return post_url, fields
 
 
-def _login(username: str, password: str) -> requests.Session:
+def _login(username: str, password: str):
     """
     Log in to eBird via Cornell SSO.
-    Returns an authenticated requests.Session with eBird session cookies.
-    Raises RuntimeError with a diagnostic message on any failure.
+    Returns an authenticated session.
+    Raises LoginError on auth failure or network/IP block.
     """
-    session = requests.Session()
-    session.headers.update(_HEADERS)
+    session = _make_session()
 
-    # ── Step 1: warm up the session on the eBird homepage ──────────────────
-    # This sets initial cookies and makes the subsequent login redirect look
-    # like natural browser navigation rather than a cold hit on the CAS server.
+    # Step 1: warm-up visit to establish session cookies
     try:
         session.get("https://ebird.org", allow_redirects=True, timeout=15)
     except Exception:
-        pass  # Non-fatal — continue even if homepage is slow
+        pass
 
-    # ── Step 2: GET ebird.org/login (redirects us to Cornell CAS) ──────────
-    resp = session.get("https://ebird.org/login", allow_redirects=True, timeout=25)
+    # Step 2: get the login page (eBird redirects to Cornell CAS)
+    try:
+        resp = session.get("https://ebird.org/login", allow_redirects=True, timeout=25)
+    except Exception as exc:
+        raise LoginError(f"Could not reach eBird login page: {exc}") from exc
 
     if resp.status_code == 401:
-        raise RuntimeError(
-            f"Server returned 401 at login step. "
-            f"Final URL: {resp.url} — the server may be blocking this IP range."
+        raise LoginError(
+            f"eBird server returned 401 (URL: {resp.url}). "
+            "This host may be IP-blocked by Cornell CAS."
         )
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"Unexpected {resp.status_code} at login page. URL: {resp.url}"
+        raise LoginError(
+            f"Unexpected HTTP {resp.status_code} at login page (URL: {resp.url})."
         )
 
-    # If we ended up straight on ebird.org (no CAS redirect), we may already
-    # have a valid session from a prior warm-up cookie.
-    if "ebird.org" in resp.url and "cassso" not in resp.url and "login" not in resp.url.lower():
+    # If we landed on eBird proper without hitting CAS, session is already live
+    if "ebird.org" in resp.url and "cassso" not in resp.url and "login" not in resp.url:
         return session
 
-    # ── Step 3: parse the CAS login form ───────────────────────────────────
+    # Step 3: parse the CAS login form
     if 'name="username"' not in resp.text:
-        raise RuntimeError(
-            f"Could not find login form at {resp.url} "
-            f"(status {resp.status_code}). "
-            "eBird may have changed their login page — check the error log."
+        raise LoginError(
+            f"No login form found at {resp.url} (status {resp.status_code}). "
+            "eBird may have changed their login page."
         )
 
     post_url, fields = _parse_form(resp.text, resp.url)
@@ -102,31 +126,34 @@ def _login(username: str, password: str) -> requests.Session:
     fields["password"] = password
     fields["_eventId"] = fields.get("_eventId", "submit")
 
-    # ── Step 4: POST credentials ────────────────────────────────────────────
-    session.headers["Referer"] = resp.url
-    resp2 = session.post(post_url, data=fields, allow_redirects=True, timeout=25)
+    # Step 4: POST credentials
+    session.headers.update({"Referer": resp.url})
+    try:
+        resp2 = session.post(post_url, data=fields, allow_redirects=True, timeout=25)
+    except Exception as exc:
+        raise LoginError(f"Credential POST failed: {exc}") from exc
 
     if resp2.status_code == 401:
-        raise RuntimeError(
-            f"Server returned 401 on credential POST. URL: {resp2.url}"
-        )
-    resp2.raise_for_status()
+        raise LoginError(f"Login POST returned 401 (URL: {resp2.url}).")
+
+    try:
+        resp2.raise_for_status()
+    except Exception as exc:
+        raise LoginError(str(exc)) from exc
 
     if "ebird.org" not in resp2.url:
         if "cassso" in resp2.url or "login" in resp2.url.lower():
-            raise RuntimeError(
-                "eBird login rejected — check your username and password in Profile."
+            raise LoginError(
+                "eBird rejected the credentials. "
+                "Check your username and password in Profile."
             )
-        raise RuntimeError(f"Login failed. Landed at: {resp2.url}")
+        raise LoginError(f"Login failed — landed at: {resp2.url}")
 
     return session
 
 
-def _scrape_year_list(session: requests.Session, region: str, year: int) -> dict[str, str]:
-    """
-    Fetch the eBird year list page for one region.
-    Returns {species_code: common_name}.
-    """
+def _scrape_year_list(session, region: str, year: int) -> dict[str, str]:
+    """Fetch the eBird year list page for one region. Returns {code: name}."""
     url = f"https://ebird.org/lifelist?r={region}&time=year&year={year}"
     resp = session.get(url, timeout=30)
     resp.raise_for_status()
@@ -149,6 +176,7 @@ def fetch_year_list_multi_region(
     """
     Log in once and scrape world / US / state year lists.
     Returns {'world': {codes}, 'US': {codes}, state_code: {codes}}.
+    Raises LoginError if authentication fails.
     """
     year = year or datetime.datetime.now().year
     session = _login(username, password)

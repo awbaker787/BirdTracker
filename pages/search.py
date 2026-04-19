@@ -15,7 +15,7 @@ from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation
 
 from src.ebird.client import EBirdClient
-from src.ebird.scraper import fetch_year_list_multi_region
+from src.ebird.scraper import LoginError, fetch_year_list_multi_region
 from src.tracker.needs_finder import Need, NeedsFinder
 from src.ui.cookies import cc_get, cc_set, get_cc
 from src.ui.map_builder import build_needs_map
@@ -190,14 +190,74 @@ if not run_btn:
     _show_error_log()
     st.stop()
 
-# ── Fetch year list (cached 23 h across page reloads) ─────────────────────────
+# ── Fetch year list (cached 23 h, with manual fallback) ───────────────────────
 year = datetime.now().year
+
+def _parse_ebird_csv(data: bytes, sc: str, yr: int) -> dict:
+    import io
+    df = pd.read_csv(io.BytesIO(data))
+    code_col = next((c for c in df.columns if "species" in c.lower() and "code" in c.lower()), None)
+    date_col = next((c for c in df.columns if "date" in c.lower()), None)
+    if not code_col or not date_col:
+        raise ValueError("Cannot find Species Code / Date columns — is this an eBird My Data CSV?")
+    df["_yr"] = pd.to_datetime(df[date_col], errors="coerce").dt.year
+    ydf = df[df["_yr"] == yr]
+    state_col = next((c for c in df.columns if "state" in c.lower() or "province" in c.lower()), None)
+    codes = set(ydf[code_col].dropna().str.strip())
+    if state_col:
+        us_codes    = set(ydf[ydf[state_col].str.startswith("US-", na=False)][code_col].dropna().str.strip())
+        state_codes = set(ydf[ydf[state_col] == sc][code_col].dropna().str.strip())
+    else:
+        us_codes = state_codes = codes
+    return {"world": list(codes), "US": list(us_codes), sc: list(state_codes)}
+
+raw_lists = None
+
+# Try automated scrape first
 with st.spinner("Fetching your eBird year list..."):
     try:
         raw_lists = _cached_year_list(username, password, state_code, year)
+    except LoginError as e:
+        _log_error("fetch_year_list", e)
     except Exception as e:
         _log_error("fetch_year_list", e)
-        st.error(f"eBird login failed: {e}")
+        st.error(f"eBird error: {e}")
+        _show_error_log()
+        st.stop()
+
+# If automated login failed, offer manual entry
+if raw_lists is None:
+    # Check if the user already provided manual data this session
+    raw_lists = st.session_state.get("_manual_year_lists")
+
+if raw_lists is None:
+    st.warning(
+        "Automated eBird login is being blocked by the server from this host. "
+        "Upload your eBird data CSV as a one-time workaround:"
+    )
+    with st.expander("How to download your eBird data", expanded=True):
+        st.markdown(
+            "1. Log into **[ebird.org](https://ebird.org)** in your browser\n"
+            "2. Go to **My eBird → Download My Data** "
+            "([direct link](https://ebird.org/downloadMyData))\n"
+            "3. Click **Request Data Export** and wait for the email\n"
+            "4. Download `MyEBirdData.csv` and upload it below"
+        )
+    uploaded = st.file_uploader("Upload MyEBirdData.csv", type="csv")
+    if uploaded:
+        try:
+            raw_lists = _parse_ebird_csv(uploaded.read(), state_code, year)
+            st.session_state["_manual_year_lists"] = raw_lists
+            st.success(
+                f"Loaded: {len(raw_lists.get('world',[]))} world / "
+                f"{len(raw_lists.get('US',[]))} US / "
+                f"{len(raw_lists.get(state_code,[]))} {state_code} species this year."
+            )
+        except Exception as e:
+            st.error(f"Could not parse CSV: {e}")
+            _show_error_log()
+            st.stop()
+    else:
         _show_error_log()
         st.stop()
 
@@ -270,6 +330,7 @@ with usa_tab:
 st.divider()
 if st.button("Refresh Year List from eBird"):
     _cached_year_list.clear()
+    st.session_state.pop("_manual_year_lists", None)
     st.rerun()
 
 _show_error_log()
