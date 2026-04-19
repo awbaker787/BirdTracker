@@ -1,8 +1,9 @@
 """
 eBird authenticated scraper — requests-based (no browser needed).
 
-Logs in via Cornell SSO by properly parsing the login form action URL
-and all hidden CSRF fields, then scrapes year lists for each region.
+Logs in via Cornell SSO by starting at ebird.org/login (which redirects to
+CAS naturally), parsing the login form action URL and all hidden CSRF fields,
+then scrapes year lists for each region.
 """
 import datetime
 import os
@@ -13,10 +14,9 @@ from urllib.parse import urljoin
 import requests
 
 
-EBIRD_LOGIN_URL = (
-    "https://secure.birds.cornell.edu/cassso/login"
-    "?service=https%3A%2F%2Febird.org%2Flogin%2Fcas%3Fportal%3Debird"
-)
+# Start here — eBird redirects us to Cornell CAS with the right cookies/context.
+# Going to the CAS URL directly triggers 401 from Streamlit Cloud IPs.
+_EBIRD_LOGIN_ENTRY = "https://ebird.org/login"
 
 _HEADERS = {
     "User-Agent": (
@@ -24,10 +24,16 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection":      "keep-alive",
+    "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language":           "en-US,en;q=0.9",
+    "Accept-Encoding":           "gzip, deflate, br",
+    "Connection":                "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest":            "document",
+    "Sec-Fetch-Mode":            "navigate",
+    "Sec-Fetch-Site":            "none",
+    "Sec-Fetch-User":            "?1",
+    "Cache-Control":             "max-age=0",
 }
 
 _SPECIES_CODE_RE = re.compile(r'data-species-code="([^"]+)"')
@@ -42,7 +48,6 @@ def _parse_form(html: str, page_url: str) -> tuple[str, dict]:
     Extract the form action URL and all input field values.
     Returns (post_url, {field_name: value}).
     """
-    # Form action
     action_m = re.search(r'<form[^>]+action="([^"]+)"', html)
     if action_m:
         action = action_m.group(1).replace("&amp;", "&")
@@ -50,7 +55,6 @@ def _parse_form(html: str, page_url: str) -> tuple[str, dict]:
     else:
         post_url = page_url
 
-    # All input fields (hidden + visible)
     fields: dict[str, str] = {}
     for tag in re.findall(r"<input[^>]+>", html):
         name_m  = re.search(r'\bname="([^"]+)"',  tag)
@@ -69,25 +73,30 @@ def _login(username: str, password: str) -> requests.Session:
     session = requests.Session()
     session.headers.update(_HEADERS)
 
-    # Step 1: GET login page
-    resp = session.get(EBIRD_LOGIN_URL, timeout=25)
+    # Step 1: GET ebird.org/login — the server redirects us to Cornell CAS,
+    # setting cookies and referrer context that prevent the 401.
+    resp = session.get(_EBIRD_LOGIN_ENTRY, allow_redirects=True, timeout=25)
     resp.raise_for_status()
 
-    # Step 2: Parse form — action URL contains lt token in query string
+    # If we landed straight on ebird.org without hitting CAS the user is
+    # already logged in from a previous cookie — return as-is.
+    if "secure.birds.cornell.edu" not in resp.url and "ebird.org" in resp.url:
+        return session
+
+    # Step 2: Parse the CAS form (action URL contains the lt/execution tokens)
     post_url, fields = _parse_form(resp.text, resp.url)
 
-    # Step 3: Fill credentials (CAS field names are 'username' / 'password')
-    fields["username"]   = username
-    fields["password"]   = password
-    fields["_eventId"]   = fields.get("_eventId", "submit")
+    # Step 3: Fill credentials
+    fields["username"] = username
+    fields["password"] = password
+    fields["_eventId"] = fields.get("_eventId", "submit")
 
-    # Step 4: POST with Referer so the server accepts the submission
+    # Step 4: POST with Referer
     session.headers["Referer"] = resp.url
     resp2 = session.post(post_url, data=fields, allow_redirects=True, timeout=25)
     resp2.raise_for_status()
 
     if "ebird.org" not in resp2.url:
-        # Check if login page was returned again (wrong password)
         if "cassso" in resp2.url or "login" in resp2.url.lower():
             raise RuntimeError(
                 "eBird login rejected — check your username and password in Profile."
