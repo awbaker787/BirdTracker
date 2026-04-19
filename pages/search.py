@@ -196,6 +196,31 @@ _yl_meta = _load_yl_meta()
 # ── Sidebar: less-frequent settings ───────────────────────────────────────────
 with st.sidebar:
     st.caption(f"Signed in as **{username}**")
+
+    # ── Year list data status ──────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Year List Data")
+    _meta_now = _load_yl_meta()
+    if _meta_now.get("url"):
+        st.success("URL saved — auto-loads each session")
+        st.caption(f"Last loaded: {_meta_now.get('loaded_at', '—')}")
+        if st.button("Change / clear saved URL", use_container_width=True):
+            _save_yl_meta("", "", "")
+            _cached_year_list_from_url.clear()
+            st.session_state.pop("_manual_year_lists", None)
+            st.session_state.pop("_yl_source", None)
+            st.rerun()
+    elif _meta_now.get("loaded_at"):
+        st.info(f"Uploaded file · {_meta_now.get('loaded_at', '—')}")
+        st.caption("Re-upload needed after closing browser")
+        if st.button("Clear upload", use_container_width=True):
+            _save_yl_meta("", "", "")
+            st.session_state.pop("_manual_year_lists", None)
+            st.session_state.pop("_yl_source", None)
+            st.rerun()
+    else:
+        st.caption("Auto-fetching from eBird (or provide URL/file on search)")
+
     st.divider()
     st.subheader("Location & Scope")
     lat       = st.number_input("Latitude",  value=float(st.session_state.get("_geo_lat", _prefs["lat"])),  format="%.4f")
