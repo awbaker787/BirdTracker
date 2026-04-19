@@ -95,7 +95,6 @@ if errors:
     st.divider()
     with st.expander(f"Error Log ({len(errors)})", expanded=True):
         for e in reversed(errors):
-            st.markdown(f"**{e['ctx']}**: `{e['msg']}`")
-            st.code(e["tb"], language="python")
+            st.code(f"{e['ctx']}: {e['msg']}\n\n{e['tb']}", language="python")
         if st.button("Clear"):
             st.session_state["_err_log"] = []; st.rerun()

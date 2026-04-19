@@ -41,8 +41,7 @@ def _show_error_log():
     st.divider()
     with st.expander(f"Error Log ({len(errors)})", expanded=True):
         for e in reversed(errors):
-            st.markdown(f"**{e['ctx']}**: `{e['msg']}`")
-            st.code(e["tb"], language="python")
+            st.code(f"{e['ctx']}: {e['msg']}\n\n{e['tb']}", language="python")
         if st.button("Clear error log"):
             st.session_state["_err_log"] = []
             st.rerun()
@@ -118,6 +117,15 @@ def render_list(df, label):
         use_container_width=True)
 
 
+# ── Cached year list fetch (persists across page reloads) ─────────────────────
+@st.cache_data(ttl=23 * 3600, show_spinner=False)
+def _cached_year_list(username: str, password: str, state_code: str, year: int) -> dict:
+    """Fetch year lists once; cached 23 h so the scrape runs at most once per day."""
+    result = fetch_year_list_multi_region(username, password, state_code, year)
+    # cache_data needs JSON-serialisable data — convert sets to lists
+    return {k: list(v) for k, v in result.items()}
+
+
 # ── Auth check ────────────────────────────────────────────────────────────────
 username, password, api_key = _load_creds()
 if not (username and password and api_key):
@@ -182,22 +190,20 @@ if not run_btn:
     _show_error_log()
     st.stop()
 
-# ── Fetch year list ────────────────────────────────────────────────────────────
-cache_key = f"year_lists_{username}_{state_code}_{datetime.now().year}"
-if cache_key not in st.session_state:
-    with st.spinner("Fetching your eBird year list..."):
-        try:
-            st.session_state[cache_key] = fetch_year_list_multi_region(username, password, state_code)
-        except Exception as e:
-            _log_error("fetch_year_list", e)
-            st.error(f"eBird login failed: {e}")
-            _show_error_log()
-            st.stop()
+# ── Fetch year list (cached 23 h across page reloads) ─────────────────────────
+year = datetime.now().year
+with st.spinner("Fetching your eBird year list..."):
+    try:
+        raw_lists = _cached_year_list(username, password, state_code, year)
+    except Exception as e:
+        _log_error("fetch_year_list", e)
+        st.error(f"eBird login failed: {e}")
+        _show_error_log()
+        st.stop()
 
-year_lists = st.session_state[cache_key]
-seen_world = year_lists.get("world", set())
-seen_us    = year_lists.get("US", set())
-seen_state = year_lists.get(state_code, set())
+seen_world = set(raw_lists.get("world", []))
+seen_us    = set(raw_lists.get("US", []))
+seen_state = set(raw_lists.get(state_code, []))
 
 m1, m2, m3 = st.columns(3)
 m1.metric("World this year",         len(seen_world))
@@ -263,7 +269,7 @@ with usa_tab:
 
 st.divider()
 if st.button("Refresh Year List from eBird"):
-    del st.session_state[cache_key]
+    _cached_year_list.clear()
     st.rerun()
 
 _show_error_log()

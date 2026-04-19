@@ -8,6 +8,8 @@ import streamlit as st
 from cryptography.fernet import Fernet
 from streamlit_cookies_controller import CookieController
 
+from src.ebird.scraper import _login
+
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 _f = Fernet(_FERNET_KEY)
 cc = CookieController()
@@ -51,6 +53,14 @@ def _save_creds(u, p, k):
         _log_error("save_creds", e); return False
 
 
+def _test_login(u, p):
+    try:
+        _login(u, p)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 # ── Page ──────────────────────────────────────────────────────────────────────
 st.title("Profile")
 st.subheader("eBird Credentials")
@@ -59,18 +69,35 @@ cu, cp, ck = _load_creds()
 
 if cu and cp and ck:
     st.success(f"Connected as **{cu}**")
+
+    c_test, c_edit = st.columns(2)
+    if c_test.button("Test Login", use_container_width=True):
+        with st.spinner("Testing eBird login..."):
+            ok, err = _test_login(cu, cp)
+        if ok:
+            st.success("Login successful — credentials are working.")
+        else:
+            st.error(f"Login failed: {err}")
+
     with st.expander("Edit credentials"):
         u2 = st.text_input("Username", value=cu, key="u2")
         p2 = st.text_input("Password", value=cp, type="password", key="p2")
         k2 = st.text_input("API Key",  value=ck, type="password", key="k2",
                             help="Free at ebird.org/api/keygen")
-        c1, c2 = st.columns(2)
-        if c1.button("Save changes", type="primary", use_container_width=True):
+        col1, col2, col3 = st.columns(3)
+        if col1.button("Save changes", type="primary", use_container_width=True):
             if _save_creds(u2, p2, k2):
                 st.success("Saved!"); st.rerun()
             else:
                 st.error("Save failed — see Error Log below.")
-        if c2.button("Clear & log out", use_container_width=True):
+        if col2.button("Test", use_container_width=True):
+            with st.spinner("Testing..."):
+                ok, err = _test_login(u2, p2)
+            if ok:
+                st.success("Login successful.")
+            else:
+                st.error(f"Login failed: {err}")
+        if col3.button("Clear & log out", use_container_width=True):
             try:
                 cc.remove("bd_creds")
             except Exception as e:
@@ -97,7 +124,6 @@ if errors:
     st.divider()
     with st.expander(f"Error Log ({len(errors)})", expanded=True):
         for e in reversed(errors):
-            st.markdown(f"**{e['ctx']}**: `{e['msg']}`")
-            st.code(e["tb"], language="python")
+            st.code(f"{e['ctx']}: {e['msg']}\n\n{e['tb']}", language="python")
         if st.button("Clear"):
             st.session_state["_err_log"] = []; st.rerun()
