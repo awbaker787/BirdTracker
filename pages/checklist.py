@@ -88,7 +88,7 @@ def _ls_read(ls_key: str):
     Stable key is critical — without it a new random key is generated each render,
     the component never persists, and this always returns None (infinite loop)."""
     return _st_js(
-        f"JSON.parse(localStorage.getItem('{ls_key}') || 'null')",
+        js_expressions=f"JSON.parse(localStorage.getItem('{ls_key}') || 'null')",
         key=f"lsr_{ls_key}",
     )
 
