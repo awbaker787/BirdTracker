@@ -236,18 +236,16 @@ with st.sidebar:
 st.title("Birding Needs Finder")
 
 # ── Action bar ────────────────────────────────────────────────────────────────
-loc_col, day_col, run_col = st.columns([2, 4, 2])
-
-
 # get_geolocation() is async: returns None on first render, then triggers a rerun
-# with data. It must be called OUTSIDE the button block so it persists across
-# the two renders it needs.
+# with data.  Must be called BEFORE columns so render order is stable.
 if st.session_state.get("_want_geo"):
     _geo = get_geolocation()
     if _geo and "coords" in _geo:
         st.session_state["_geo_lat"] = _geo["coords"]["latitude"]
         st.session_state["_geo_lng"] = _geo["coords"]["longitude"]
         st.session_state.pop("_want_geo", None)
+
+loc_col, day_col, run_col = st.columns([2, 4, 2])
 
 with loc_col:
     if st.button("📍 My Location", use_container_width=True):
