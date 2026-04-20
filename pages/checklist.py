@@ -37,8 +37,8 @@ _STATES = {
     "US-UT":"Utah","US-VT":"Vermont","US-VA":"Virginia","US-WA":"Washington",
     "US-WV":"West Virginia","US-WI":"Wisconsin","US-WY":"Wyoming",
 }
-_STATE_CODES   = list(_STATES.keys())
-_STATE_NAMES   = [_STATES[c] for c in _STATE_CODES]
+_STATE_CODES = list(_STATES.keys())
+_STATE_NAMES = [_STATES[c] for c in _STATE_CODES]
 
 # ── cookie helpers ─────────────────────────────────────────────────────────────
 def _dec_json(raw):
@@ -112,28 +112,20 @@ if not api_key:
     st.warning("Go to **Profile** to enter your eBird API key first.")
     st.stop()
 
-_prefs    = _load_prefs()
-year      = datetime.now().year
+_prefs = _load_prefs()
+year   = datetime.now().year
 
-# ── custom CSS ────────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-/* Day-filter button row */
-div[data-testid="stHorizontalBlock"] button {
-    border-radius: 20px !important;
-    padding: 2px 14px !important;
-    font-size: 13px !important;
-}
-/* Tighter checklist rows */
-.cl-row { display:flex; align-items:flex-start; gap:10px; padding:6px 0;
-          border-bottom:1px solid #f0f0f0; }
-.cl-name { font-weight:600; font-size:14px; }
-.cl-sci  { color:#666; font-size:12px; font-style:italic; }
-.cl-meta { color:#888; font-size:12px; margin-top:2px; }
-</style>
-""", unsafe_allow_html=True)
+# ── session state defaults ────────────────────────────────────────────────────
+if "cl_state_code" not in st.session_state:
+    st.session_state["cl_state_code"] = _prefs.get("state", "US-FL")
+if "cl_county_code" not in st.session_state:
+    st.session_state["cl_county_code"] = ""
+if "cl_county_name" not in st.session_state:
+    st.session_state["cl_county_name"] = ""
+if "cl_days_back" not in st.session_state:
+    st.session_state["cl_days_back"] = 30
 
-# ── geolocation (must be before columns) ─────────────────────────────────────
+# ── geolocation (must be before any columns / dialogs) ────────────────────────
 if st.session_state.get("_cl_want_geo"):
     _geo = get_geolocation()
     if _geo and "coords" in _geo:
@@ -141,61 +133,106 @@ if st.session_state.get("_cl_want_geo"):
         st.session_state["_geo_lng"] = _geo["coords"]["longitude"]
         st.session_state.pop("_cl_want_geo", None)
 
-# ── location bar ──────────────────────────────────────────────────────────────
-st.markdown("## 🗒️ Field Checklist")
+# ── filter dialog ─────────────────────────────────────────────────────────────
+@st.dialog("📍 Location & Filters")
+def _open_filter_dialog(api_key: str):
+    # State
+    cur_state = st.session_state["cl_state_code"]
+    state_idx = _STATE_CODES.index(cur_state) if cur_state in _STATE_CODES else 9
+    chosen_state_name = st.selectbox("State", _STATE_NAMES, index=state_idx)
+    chosen_state_code = _STATE_CODES[_STATE_NAMES.index(chosen_state_name)]
 
-loc_c1, loc_c2, loc_c3 = st.columns([2, 3, 2])
-
-with loc_c1:
-    default_state_idx = _STATE_CODES.index(_prefs["state"]) if _prefs["state"] in _STATE_CODES else 9
-    state_name = st.selectbox(
-        "State", _STATE_NAMES, index=default_state_idx,
-        label_visibility="collapsed",
-    )
-    state_code = _STATE_CODES[_STATE_NAMES.index(state_name)]
-
-with loc_c2:
-    county_list = []
+    # County — reload if state changed
     try:
-        county_list = _counties(api_key, state_code)
-    except Exception:
-        pass
+        county_list = _counties(api_key, chosen_state_code)
+    except Exception as e:
+        st.error(f"Could not load counties: {e}")
+        return
+
     if not county_list:
-        st.error("No counties found.")
-        st.stop()
+        st.warning("No counties found for this state.")
+        return
+
     county_names = [c["name"] for c in county_list]
     county_codes = [c["code"] for c in county_list]
-    county_idx = st.selectbox(
+
+    # Try to pre-select the saved county if it's in the same state
+    saved_code = st.session_state.get("cl_county_code", "")
+    try:
+        c_idx = county_codes.index(saved_code) if saved_code in county_codes else 0
+    except ValueError:
+        c_idx = 0
+
+    chosen_county_idx = st.selectbox(
         "County", range(len(county_names)),
         format_func=lambda i: county_names[i],
-        label_visibility="collapsed",
+        index=c_idx,
     )
-    county_code = county_codes[county_idx]
-    county_name = county_names[county_idx]
 
-with loc_c3:
-    geo_label = "📍 locating…" if st.session_state.get("_cl_want_geo") else "📍 My Location"
-    if st.button(geo_label, use_container_width=True):
+    st.divider()
+
+    # Days filter
+    new_days = st.select_slider(
+        "Show birds reported in the last",
+        options=[1, 7, 14, 30, 60, 90],
+        value=st.session_state["cl_days_back"],
+        format_func=lambda d: f"{d}d",
+    )
+    st.session_state["cl_days_back"] = new_days
+
+    st.divider()
+
+    # My Location
+    geo_col, _ = st.columns([2, 1])
+    if geo_col.button("📍 Use My Location", use_container_width=True):
         st.session_state["_cl_want_geo"] = True
+
+    ulat = st.session_state.get("_geo_lat", _prefs["lat"])
+    ulng = st.session_state.get("_geo_lng", _prefs["lng"])
+    st.caption(f"Current coords: {ulat:.4f}, {ulng:.4f}")
+
+    st.divider()
+    if st.button("✅ Apply", type="primary", use_container_width=True):
+        st.session_state["cl_state_code"]  = chosen_state_code
+        st.session_state["cl_county_code"] = county_codes[chosen_county_idx]
+        st.session_state["cl_county_name"] = county_names[chosen_county_idx]
+        # Clear cached checklist if county changed
+        old_code = st.session_state.get("_last_applied_county", "")
+        new_code = county_codes[chosen_county_idx]
+        if old_code != new_code:
+            st.session_state.pop(f"_cl_{new_code}_{year}", None)
+            st.session_state.pop(f"_cl_ready_{new_code}_{year}", None)
+        st.session_state["_last_applied_county"] = new_code
         st.rerun()
 
-# ── day filter ────────────────────────────────────────────────────────────────
-_DAY_OPTIONS = [1, 7, 14, 30, 90]
-_days_key    = "cl_days_back"
-if _days_key not in st.session_state:
-    st.session_state[_days_key] = 30
+# ── ensure a county is selected ───────────────────────────────────────────────
+# On first visit, auto-load the default state's county list and pick the first
+if not st.session_state.get("cl_county_code"):
+    try:
+        _default_counties = _counties(api_key, st.session_state["cl_state_code"])
+        if _default_counties:
+            st.session_state["cl_county_code"] = _default_counties[0]["code"]
+            st.session_state["cl_county_name"] = _default_counties[0]["name"]
+    except Exception:
+        pass
 
-day_cols = st.columns(len(_DAY_OPTIONS) + 1)
-for i, d in enumerate(_DAY_OPTIONS):
-    label = f"**{d}d**" if st.session_state[_days_key] == d else f"{d}d"
-    if day_cols[i].button(label, use_container_width=True, key=f"cl_day_{d}"):
-        st.session_state[_days_key] = d
-        st.rerun()
+state_code  = st.session_state["cl_state_code"]
+county_code = st.session_state["cl_county_code"]
+county_name = st.session_state["cl_county_name"] or county_code
+days_back   = st.session_state["cl_days_back"]
 
-days_back = st.session_state[_days_key]
-day_cols[-1].caption(f"Last **{days_back}** days")
+# ── page header ───────────────────────────────────────────────────────────────
+title_col, btn_col = st.columns([5, 2])
+title_col.markdown("## 🗒️ Field Checklist")
+if btn_col.button(
+    f"📍 {county_name}, {_STATES.get(state_code, state_code)}  ·  {days_back}d  ✏️",
+    use_container_width=True,
+):
+    _open_filter_dialog(api_key)
 
-st.divider()
+if not county_code:
+    st.info("Click the location button above to choose a county.")
+    st.stop()
 
 # ── load localStorage checklist ────────────────────────────────────────────────
 ls_key_val  = _ls_key(county_code, year)
@@ -221,7 +258,8 @@ with st.spinner(f"Loading birds for {county_name}…"):
         st.stop()
 
 if not obs_list:
-    st.info(f"No observations found in {county_name} in the last {days_back} days. Try a wider window.")
+    st.info(f"No observations in {county_name} in the last {days_back} days. "
+            f"Try a wider window — click the location button above.")
     st.stop()
 
 # ── map (collapsible) ─────────────────────────────────────────────────────────
@@ -237,14 +275,12 @@ with st.expander("🗺️ Map", expanded=True):
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Satellite",
     ).add_to(m)
-
     for o in obs_list:
         if "lat" not in o:
             continue
         code = o.get("speciesCode", "")
         folium.CircleMarker(
-            location=[o["lat"], o["lng"]],
-            radius=5,
+            location=[o["lat"], o["lng"]], radius=5,
             color="#2ecc71" if code in checked else "#3498db",
             fill=True, fill_opacity=0.8,
             tooltip=o.get("comName", code) + (" ✓" if code in checked else ""),
@@ -253,8 +289,6 @@ with st.expander("🗺️ Map", expanded=True):
                 max_width=200,
             ),
         ).add_to(m)
-
-    # User location blue dot
     ulat = st.session_state.get("_geo_lat", _prefs["lat"])
     ulng = st.session_state.get("_geo_lng", _prefs["lng"])
     folium.CircleMarker([ulat, ulng], radius=10, color="#fff", weight=2,
@@ -266,20 +300,18 @@ with st.expander("🗺️ Map", expanded=True):
     st_folium(m, use_container_width=True, height=340, returned_objects=[])
 
 # ── checklist header ──────────────────────────────────────────────────────────
-total = len(obs_list)
+total     = len(obs_list)
 n_checked = len(checked & {o["speciesCode"] for o in obs_list})
 
 h_left, h_right = st.columns([4, 2])
-with h_left:
-    name_filter = st.text_input(
-        "search", placeholder="🔍  Search species…",
-        label_visibility="collapsed", key="cl_filter"
-    )
-with h_right:
-    show_all = st.radio(
-        "show", ["All", "Unchecked"], horizontal=True,
-        label_visibility="collapsed", key="cl_show"
-    ) == "All"
+name_filter = h_left.text_input(
+    "search", placeholder="🔍  Search species…",
+    label_visibility="collapsed", key="cl_filter",
+)
+show_all = h_right.radio(
+    "show", ["All", "Unchecked"], horizontal=True,
+    label_visibility="collapsed", key="cl_show",
+) == "All"
 
 st.markdown(
     f"**{county_name}** · {year} · "
@@ -299,12 +331,12 @@ new_checked = set(checked)
 changed     = False
 
 for o in filtered:
-    code  = o.get("speciesCode", "")
-    name  = o.get("comName", code)
-    sci   = o.get("sciName", "")
-    dt    = o.get("obsDt", "")[:10]
-    loc   = o.get("locName", "")
-    cnt   = o.get("howMany")
+    code = o.get("speciesCode", "")
+    name = o.get("comName", code)
+    sci  = o.get("sciName", "")
+    dt   = o.get("obsDt", "")[:10]
+    loc  = o.get("locName", "")
+    cnt  = o.get("howMany")
 
     cb_col, info_col = st.columns([1, 11])
     ticked = cb_col.checkbox(
@@ -313,14 +345,12 @@ for o in filtered:
         label_visibility="collapsed",
     )
     info_col.markdown(
-        f"<div class='cl-name'>{name}</div>"
-        f"<div class='cl-sci'>{sci}</div>"
-        f"<div class='cl-meta'>{dt}"
-        + (f" &nbsp;·&nbsp; {cnt} birds" if cnt else "")
-        + f" &nbsp;·&nbsp; {loc}</div>",
+        f"**{name}** &nbsp; <span style='color:#888;font-size:12px;font-style:italic'>{sci}</span>  \n"
+        f"<span style='color:#999;font-size:12px'>{dt}"
+        + (f" · {cnt} birds" if cnt else "")
+        + f" · {loc}</span>",
         unsafe_allow_html=True,
     )
-
     if ticked and code not in new_checked:
         new_checked.add(code);     changed = True
     elif not ticked and code in new_checked:
@@ -330,15 +360,11 @@ if changed:
     st.session_state[session_key] = new_checked
     _ls_write(ls_key_val, new_checked)
 
+# ── footer ────────────────────────────────────────────────────────────────────
 st.divider()
-
-# ── footer actions ────────────────────────────────────────────────────────────
 foot_l, foot_r = st.columns([3, 2])
-foot_l.caption(
-    f"Saved locally · no eBird login needed · "
-    f"last {days_back} days · {len(filtered)} shown"
-)
-if foot_r.button("🗑️ Clear this county's checklist", use_container_width=True):
+foot_l.caption(f"Saved locally · no eBird login · last {days_back}d · {len(filtered)} shown")
+if foot_r.button("🗑️ Clear checklist", use_container_width=True):
     _ls_clear(ls_key_val)
     st.session_state.pop(session_key, None)
     st.session_state.pop(ready_key, None)

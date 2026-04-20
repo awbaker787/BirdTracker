@@ -257,15 +257,12 @@ with loc_col:
     st.caption(f"{label} · {state_code} · {dist_km} km")
 
 with day_col:
-    st.caption("Seen within last:")
-    d1, d2, d3, d4, d5 = st.columns(5)
-    if d1.button("1d",  use_container_width=True): st.session_state["days_back"] = 1
-    if d2.button("3d",  use_container_width=True): st.session_state["days_back"] = 3
-    if d3.button("7d",  use_container_width=True): st.session_state["days_back"] = 7
-    if d4.button("14d", use_container_width=True): st.session_state["days_back"] = 14
-    days_back = d5.number_input("days", min_value=1, max_value=30,
+    days_back = st.select_slider(
+        "Seen within last",
+        options=[1, 3, 7, 14, 30],
         value=st.session_state.get("days_back", int(_prefs["days"])),
-        label_visibility="collapsed")
+        format_func=lambda d: f"{d}d",
+    )
     st.session_state["days_back"] = days_back
 
 with run_col:
