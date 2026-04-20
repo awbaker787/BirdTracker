@@ -87,9 +87,13 @@ def _ls_read(ls_key: str):
     """Returns Python list on 2nd+ render, None on 1st render.
     Stable key is critical — without it a new random key is generated each render,
     the component never persists, and this always returns None (infinite loop)."""
+    # Return [] (not null) for missing key so Python gets [] vs None.
+    # None = component not ready yet (1st render).
+    # [] = component ready, localStorage has no entry for this key.
+    # [...] = component ready, saved checklist found.
     return _st_js(
-        js_expressions=f"JSON.parse(localStorage.getItem('{ls_key}') || 'null')",
-        want_output=True,   # required — without this the return value is always None
+        js_expressions=f"JSON.parse(localStorage.getItem('{ls_key}') || '[]')",
+        want_output=True,
         key=f"lsr_{ls_key}",
     )
 
