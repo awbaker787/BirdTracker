@@ -89,6 +89,7 @@ def _ls_read(ls_key: str):
     the component never persists, and this always returns None (infinite loop)."""
     return _st_js(
         js_expressions=f"JSON.parse(localStorage.getItem('{ls_key}') || 'null')",
+        want_output=True,   # required — without this the return value is always None
         key=f"lsr_{ls_key}",
     )
 
