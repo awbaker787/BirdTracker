@@ -239,21 +239,19 @@ ls_key_val  = _ls_key(county_code, year)
 session_key = f"_cl_{county_code}_{year}"
 ready_key   = f"_cl_ready_{county_code}_{year}"
 
-# Always render the read component (stable key = cached value on 2nd+ render).
-# Never block with st.stop() — start with empty set and update when data arrives.
-ls_raw = _ls_read(ls_key_val)
+# Only call _ls_read while still initialising — once ready_key is True we stop,
+# because streamlit_js_eval re-fires setComponentValue every render and would
+# cause an infinite rerun loop if left in the render tree permanently.
+_need_read = st.session_state.get(ready_key) != True
+ls_raw     = _ls_read(ls_key_val) if _need_read else None
 
 if ready_key not in st.session_state:
-    if ls_raw is None:
-        # Component hasn't responded yet — start empty, mark pending
-        st.session_state[session_key] = set()
-        st.session_state[ready_key]   = "pending"
-    else:
-        st.session_state[session_key] = set(ls_raw) if ls_raw else set()
-        st.session_state[ready_key]   = True
+    # First render — component not ready yet; start empty, mark pending
+    st.session_state[session_key] = set()
+    st.session_state[ready_key]   = "pending"
 
 elif st.session_state[ready_key] == "pending" and ls_raw is not None:
-    # Component just returned data — apply it (no extra rerun needed)
+    # Component returned data — apply and mark done
     st.session_state[session_key] = set(ls_raw) if ls_raw else set()
     st.session_state[ready_key]   = True
 
