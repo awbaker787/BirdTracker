@@ -81,12 +81,27 @@ def build_needs_map(
         cluster.add_to(fg)
         fg.add_to(m)
 
-    # User location
-    folium.Marker(
+    # User location — blue dot with white border (like iOS/Android maps)
+    folium.CircleMarker(
         location=[user_lat, user_lng],
+        radius=10,
+        color="#ffffff",
+        weight=2,
+        fill=True,
+        fill_color="#4285F4",
+        fill_opacity=1.0,
         tooltip="Your location",
         popup="You are here",
-        icon=folium.Icon(color="red", icon="home"),
+    ).add_to(m)
+    # Subtle accuracy halo
+    folium.CircleMarker(
+        location=[user_lat, user_lng],
+        radius=22,
+        color="#4285F4",
+        weight=1,
+        fill=True,
+        fill_color="#4285F4",
+        fill_opacity=0.15,
     ).add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)

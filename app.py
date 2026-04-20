@@ -16,8 +16,9 @@ except TypeError:
     st.rerun()
 
 pg = st.navigation([
-    st.Page("pages/search.py",   title="Find My Needs", icon="🔍", default=True),
-    st.Page("pages/profile.py",  title="Profile",       icon="👤"),
-    st.Page("pages/settings.py", title="Settings",      icon="⚙️"),
+    st.Page("pages/search.py",    title="Find My Needs",    icon="🔍", default=True),
+    st.Page("pages/checklist.py", title="Field Checklist",  icon="✅"),
+    st.Page("pages/profile.py",   title="Profile",          icon="👤"),
+    st.Page("pages/settings.py",  title="Settings",         icon="⚙️"),
 ])
 pg.run()

@@ -67,14 +67,20 @@ prefs = _load_prefs()
 
 st.subheader("Location")
 
-if st.button("📍 Use My Current Location", use_container_width=True):
-    loc = get_geolocation()
-    if loc and "coords" in loc:
-        st.session_state["_geo_lat"] = loc["coords"]["latitude"]
-        st.session_state["_geo_lng"] = loc["coords"]["longitude"]
+# get_geolocation() is async — must live outside the button block
+if st.session_state.get("_want_geo"):
+    _geo = get_geolocation()
+    if _geo and "coords" in _geo:
+        st.session_state["_geo_lat"] = _geo["coords"]["latitude"]
+        st.session_state["_geo_lng"] = _geo["coords"]["longitude"]
+        st.session_state.pop("_want_geo", None)
         st.success(f"Location detected: {st.session_state['_geo_lat']:.4f}, {st.session_state['_geo_lng']:.4f}")
-    else:
-        st.warning("Could not detect location — browser may have blocked access.")
+
+if st.button("📍 Use My Current Location", use_container_width=True):
+    st.session_state["_want_geo"] = True
+    st.rerun()
+elif st.session_state.get("_want_geo"):
+    st.info("Waiting for browser location…")
 
 c1, c2 = st.columns(2)
 lat   = c1.number_input("Latitude",  value=float(st.session_state.get("_geo_lat", prefs["lat"])),  format="%.4f")

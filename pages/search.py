@@ -238,16 +238,25 @@ st.title("Birding Needs Finder")
 # ── Action bar ────────────────────────────────────────────────────────────────
 loc_col, day_col, run_col = st.columns([2, 4, 2])
 
+
+# get_geolocation() is async: returns None on first render, then triggers a rerun
+# with data. It must be called OUTSIDE the button block so it persists across
+# the two renders it needs.
+if st.session_state.get("_want_geo"):
+    _geo = get_geolocation()
+    if _geo and "coords" in _geo:
+        st.session_state["_geo_lat"] = _geo["coords"]["latitude"]
+        st.session_state["_geo_lng"] = _geo["coords"]["longitude"]
+        st.session_state.pop("_want_geo", None)
+
 with loc_col:
     if st.button("📍 My Location", use_container_width=True):
-        loc = get_geolocation()
-        if loc and "coords" in loc:
-            st.session_state["_geo_lat"] = loc["coords"]["latitude"]
-            st.session_state["_geo_lng"] = loc["coords"]["longitude"]
-            st.rerun()
+        st.session_state["_want_geo"] = True
+        st.rerun()
     lat_disp = st.session_state.get("_geo_lat", _prefs["lat"])
     lng_disp = st.session_state.get("_geo_lng", _prefs["lng"])
-    st.caption(f"{lat_disp:.3f}, {lng_disp:.3f} · {state_code} · {dist_km} km")
+    label = "📍 locating…" if st.session_state.get("_want_geo") else f"{lat_disp:.3f}, {lng_disp:.3f}"
+    st.caption(f"{label} · {state_code} · {dist_km} km")
 
 with day_col:
     st.caption("Seen within last:")
