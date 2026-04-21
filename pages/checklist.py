@@ -395,15 +395,12 @@ with st.expander("🗺️ Map", expanded=True):
 total     = len(obs_list)
 n_checked = len(checked & {o["speciesCode"] for o in obs_list})
 
-h_left, h_right = st.columns([4, 2])
-name_filter = h_left.text_input(
+srch_col, view_col = st.columns([5, 2])
+name_filter = srch_col.text_input(
     "search", placeholder="🔍  Search species…",
     label_visibility="collapsed", key="cl_filter",
 )
-show_all = h_right.radio(
-    "show", ["All", "Unchecked"], horizontal=True,
-    label_visibility="collapsed", key="cl_show",
-) == "All"
+detailed = view_col.toggle("Detailed view", value=False, key="cl_detailed")
 
 st.markdown(
     f"**{county_name}** · {year} · "
@@ -412,11 +409,10 @@ st.markdown(
 )
 st.divider()
 
-# ── checklist rows ────────────────────────────────────────────────────────────
+# ── checklist rows (all species always shown — checking only updates the map) ──
 filtered = [
     o for o in obs_list
     if name_filter.lower() in o.get("comName", "").lower()
-    and (show_all or o.get("speciesCode") not in checked)
 ]
 
 new_checked = set(checked)
@@ -425,10 +421,6 @@ changed     = False
 for o in filtered:
     code = o.get("speciesCode", "")
     name = o.get("comName", code)
-    sci  = o.get("sciName", "")
-    dt   = o.get("obsDt", "")[:10]
-    loc  = o.get("locName", "")
-    cnt  = o.get("howMany")
 
     cb_col, info_col = st.columns([1, 11])
     ticked = cb_col.checkbox(
@@ -436,13 +428,25 @@ for o in filtered:
         key=f"cb_{county_code}_{year}_{code}",
         label_visibility="collapsed",
     )
-    info_col.markdown(
-        f"**{name}** &nbsp; <span style='color:#888;font-size:12px;font-style:italic'>{sci}</span>  \n"
-        f"<span style='color:#999;font-size:12px'>{dt}"
-        + (f" · {cnt} birds" if cnt else "")
-        + f" · {loc}</span>",
-        unsafe_allow_html=True,
-    )
+
+    if detailed:
+        sci = o.get("sciName", "")
+        dt  = o.get("obsDt", "")[:10]
+        loc = o.get("locName", "")
+        cnt = o.get("howMany")
+        info_col.markdown(
+            f"**{name}** &nbsp; <span style='color:#888;font-size:12px;font-style:italic'>{sci}</span>  \n"
+            f"<span style='color:#999;font-size:12px'>{dt}"
+            + (f" · {cnt} birds" if cnt else "")
+            + f" · {loc}</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        info_col.markdown(
+            f"{'~~' if code in checked else ''}**{name}**{'~~' if code in checked else ''}",
+            unsafe_allow_html=True,
+        )
+
     if ticked and code not in new_checked:
         new_checked.add(code);     changed = True
     elif not ticked and code in new_checked:
