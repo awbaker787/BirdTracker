@@ -190,16 +190,15 @@ if "_geo_lat" not in st.session_state:
 if "_geo_lng" not in st.session_state:
     st.session_state["_geo_lng"] = _prefs.get("lng", -80.0728)
 
-# ── geolocation (must be before any columns / dialogs) ────────────────────────
+# ── geolocation (must be outside dialog / columns) ───────────────────────────
 if st.session_state.get("_cl_want_geo"):
-    _geo = get_geolocation()
+    _geo = get_geolocation()          # None on 1st render; real data on 2nd
     if _geo and "coords" in _geo:
         _lat = _geo["coords"]["latitude"]
         _lng = _geo["coords"]["longitude"]
         st.session_state["_geo_lat"] = _lat
         st.session_state["_geo_lng"] = _lng
-        # Auto-detect state + county from coordinates
-        with st.spinner("Detecting your county…"):
+        with st.spinner(f"Locating county for {_lat:.4f}, {_lng:.4f}…"):
             _detected = _county_from_latlon(api_key, _lat, _lng)
         if _detected:
             _sc, _cc, _cn = _detected
@@ -209,6 +208,12 @@ if st.session_state.get("_cl_want_geo"):
             st.session_state.pop(f"_cl_{_cc}_{year}", None)
             st.session_state.pop(f"_cl_ready_{_cc}_{year}", None)
             _save_cl_prefs(_sc, _cc, _cn, _lat, _lng)
+            st.toast(f"📍 Set to {_cn}, {_STATES.get(_sc, _sc)}", icon="✅")
+        else:
+            st.warning(
+                f"Got your coordinates ({_lat:.4f}, {_lng:.4f}) but could not "
+                "identify the county — please pick it manually in the filter."
+            )
         st.session_state.pop("_cl_want_geo", None)
 
 # ── filter dialog ─────────────────────────────────────────────────────────────
@@ -261,13 +266,12 @@ def _open_filter_dialog(api_key: str):
     st.divider()
 
     # My Location
-    geo_col, _ = st.columns([2, 1])
-    if geo_col.button("📍 Use My Location", use_container_width=True):
-        st.session_state["_cl_want_geo"] = True
-
     ulat = st.session_state.get("_geo_lat", _prefs["lat"])
     ulng = st.session_state.get("_geo_lng", _prefs["lng"])
-    st.caption(f"Current coords: {ulat:.4f}, {ulng:.4f}")
+    st.caption(f"Last known: {ulat:.4f}, {ulng:.4f}")
+    if st.button("📍 Use My Current Location", use_container_width=True):
+        st.session_state["_cl_want_geo"] = True
+        st.rerun()   # close dialog first; geo handler runs on next render
 
     st.divider()
     if st.button("✅ Apply", type="primary", use_container_width=True):
