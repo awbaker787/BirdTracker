@@ -5,6 +5,7 @@ No eBird login required.  Checks are saved to browser localStorage
 per county + year and persist across sessions.
 """
 import json
+import requests as _req
 import streamlit.components.v1 as _stcomp
 from datetime import datetime
 
@@ -14,7 +15,7 @@ from streamlit_folium import st_folium
 from streamlit_js_eval import streamlit_js_eval as _st_js, get_geolocation
 
 from src.ebird.client import EBirdClient
-from src.ui.cookies import cc_get, get_cc
+from src.ui.cookies import cc_get, cc_set, get_cc
 
 from cryptography.fernet import Fernet
 _FERNET_KEY = b"ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
@@ -41,11 +42,16 @@ _STATE_CODES = list(_STATES.keys())
 _STATE_NAMES = [_STATES[c] for c in _STATE_CODES]
 
 # ── cookie helpers ─────────────────────────────────────────────────────────────
+_ONE_YEAR = 365 * 24 * 3600
+
 def _dec_json(raw):
     try:
         return json.loads(_f.decrypt(raw.encode()).decode())
     except Exception:
         return {}
+
+def _enc_json(obj) -> str:
+    return _f.encrypt(json.dumps(obj).encode()).decode()
 
 def _load_creds():
     try:
@@ -56,7 +62,8 @@ def _load_creds():
         return "", "", ""
 
 def _load_prefs():
-    defaults = {"lat": 26.4615, "lng": -80.0728, "state": "US-FL"}
+    defaults = {"lat": 26.4615, "lng": -80.0728, "state": "US-FL",
+                "cl_county_code": "", "cl_county_name": ""}
     try:
         raw = cc_get(cc, "bd_prefs")
         if raw:
@@ -64,6 +71,18 @@ def _load_prefs():
     except Exception:
         pass
     return defaults
+
+def _save_cl_prefs(state_code: str, county_code: str, county_name: str,
+                   lat: float, lng: float):
+    """Merge checklist location into bd_prefs cookie."""
+    try:
+        raw = cc_get(cc, "bd_prefs")
+        d   = _dec_json(raw) if raw else {}
+        d.update({"state": state_code, "lat": lat, "lng": lng,
+                  "cl_county_code": county_code, "cl_county_name": county_name})
+        cc_set(cc, "bd_prefs", _enc_json(d), max_age=_ONE_YEAR)
+    except Exception:
+        pass
 
 # ── eBird API ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=7*24*3600, show_spinner=False)
@@ -84,6 +103,48 @@ def _recent_obs(api_key: str, county_code: str, days_back: int) -> list[dict]:
         if code not in seen or o.get("obsDt", "") > seen[code].get("obsDt", ""):
             seen[code] = o
     return sorted(seen.values(), key=lambda x: x.get("comName", ""))
+
+# ── reverse geocoding ─────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _reverse_geocode(lat: float, lng: float) -> dict:
+    try:
+        r = _req.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lng, "format": "json"},
+            headers={"User-Agent": "BirdTracker/1.0"},
+            timeout=8,
+        )
+        return r.json().get("address", {})
+    except Exception:
+        return {}
+
+def _county_from_latlon(api_key: str, lat: float, lng: float):
+    """Return (state_code, county_code, county_name) or None."""
+    addr = _reverse_geocode(lat, lng)
+    if not addr:
+        return None
+    # Map state name → eBird state code
+    state_name = addr.get("state", "")
+    state_code = next(
+        (code for code, name in _STATES.items() if name.lower() == state_name.lower()),
+        None,
+    )
+    if not state_code:
+        return None
+    # Strip "County" / "Parish" suffix
+    raw_county = addr.get("county", "")
+    clean = raw_county.replace(" County", "").replace(" Parish", "").strip().lower()
+    if not clean:
+        return None
+    counties = _counties(api_key, state_code)
+    # Exact match first, then partial
+    for c in counties:
+        if c["name"].lower() == clean:
+            return state_code, c["code"], c["name"]
+    for c in counties:
+        if clean in c["name"].lower() or c["name"].lower() in clean:
+            return state_code, c["code"], c["name"]
+    return None
 
 # ── localStorage ───────────────────────────────────────────────────────────────
 def _ls_key(county_code: str, year: int) -> str:
@@ -115,22 +176,39 @@ if not api_key:
 _prefs = _load_prefs()
 year   = datetime.now().year
 
-# ── session state defaults ────────────────────────────────────────────────────
+# ── session state defaults (restored from cookie on first load) ───────────────
 if "cl_state_code" not in st.session_state:
-    st.session_state["cl_state_code"] = _prefs.get("state", "US-FL")
+    st.session_state["cl_state_code"]  = _prefs.get("state", "US-FL")
 if "cl_county_code" not in st.session_state:
-    st.session_state["cl_county_code"] = ""
+    st.session_state["cl_county_code"] = _prefs.get("cl_county_code", "")
 if "cl_county_name" not in st.session_state:
-    st.session_state["cl_county_name"] = ""
+    st.session_state["cl_county_name"] = _prefs.get("cl_county_name", "")
 if "cl_days_back" not in st.session_state:
     st.session_state["cl_days_back"] = 30
+if "_geo_lat" not in st.session_state:
+    st.session_state["_geo_lat"] = _prefs.get("lat", 26.4615)
+if "_geo_lng" not in st.session_state:
+    st.session_state["_geo_lng"] = _prefs.get("lng", -80.0728)
 
 # ── geolocation (must be before any columns / dialogs) ────────────────────────
 if st.session_state.get("_cl_want_geo"):
     _geo = get_geolocation()
     if _geo and "coords" in _geo:
-        st.session_state["_geo_lat"] = _geo["coords"]["latitude"]
-        st.session_state["_geo_lng"] = _geo["coords"]["longitude"]
+        _lat = _geo["coords"]["latitude"]
+        _lng = _geo["coords"]["longitude"]
+        st.session_state["_geo_lat"] = _lat
+        st.session_state["_geo_lng"] = _lng
+        # Auto-detect state + county from coordinates
+        with st.spinner("Detecting your county…"):
+            _detected = _county_from_latlon(api_key, _lat, _lng)
+        if _detected:
+            _sc, _cc, _cn = _detected
+            st.session_state["cl_state_code"]  = _sc
+            st.session_state["cl_county_code"] = _cc
+            st.session_state["cl_county_name"] = _cn
+            st.session_state.pop(f"_cl_{_cc}_{year}", None)
+            st.session_state.pop(f"_cl_ready_{_cc}_{year}", None)
+            _save_cl_prefs(_sc, _cc, _cn, _lat, _lng)
         st.session_state.pop("_cl_want_geo", None)
 
 # ── filter dialog ─────────────────────────────────────────────────────────────
@@ -193,16 +271,18 @@ def _open_filter_dialog(api_key: str):
 
     st.divider()
     if st.button("✅ Apply", type="primary", use_container_width=True):
-        st.session_state["cl_state_code"]  = chosen_state_code
-        st.session_state["cl_county_code"] = county_codes[chosen_county_idx]
-        st.session_state["cl_county_name"] = county_names[chosen_county_idx]
-        # Clear cached checklist if county changed
-        old_code = st.session_state.get("_last_applied_county", "")
         new_code = county_codes[chosen_county_idx]
-        if old_code != new_code:
+        new_name = county_names[chosen_county_idx]
+        ulat = st.session_state.get("_geo_lat", _prefs["lat"])
+        ulng = st.session_state.get("_geo_lng", _prefs["lng"])
+        st.session_state["cl_state_code"]  = chosen_state_code
+        st.session_state["cl_county_code"] = new_code
+        st.session_state["cl_county_name"] = new_name
+        if st.session_state.get("_last_applied_county") != new_code:
             st.session_state.pop(f"_cl_{new_code}_{year}", None)
             st.session_state.pop(f"_cl_ready_{new_code}_{year}", None)
         st.session_state["_last_applied_county"] = new_code
+        _save_cl_prefs(chosen_state_code, new_code, new_name, ulat, ulng)
         st.rerun()
 
 # ── ensure a county is selected ───────────────────────────────────────────────
